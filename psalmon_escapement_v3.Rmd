@@ -1,0 +1,2144 @@
+---
+author: "Matt Siskey"
+output:
+  html_document:
+    code_folding: hide
+    highlight: zenburn
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    theme: yeti
+    fig_caption: true
+    toc: true
+    number_sections: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+params:
+  current_year: "2023"
+  sp: "Chinook" # "Chinook" "Coho" "Steelhead"
+  system: "Puyallup River" # "Puyallup River" "South Sound" "East Kitsap"
+title: "**`r params$current_year` `r params$system` `r params$sp` Extreme Terminal Run Size**"
+---
+
+```{=html}
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"https://privatelands.wdfw.wa.gov/wdfwlogo_clrnotxt.png"\" style=\"float: right;width: 100px;\"/>')
+   });
+</script>
+```
+
+------------------------------------------------------------------------
+Last Updated `r format(Sys.time(), '%m/%d/%Y')`.
+------------------------------------------------------------------------
+
+# **Background & Setup**
+
+---
+
+Washington Department of Fish and Wildlife (WDFW) and tribal co-managing agencies (PTI, MIT, Suquamish) conduct spawning ground surveys for Chinook, coho, chum, and pink salmon to count the number of live fish, dead fish, and redds. These data are used to estimate extreme terminal run size (ETRS) for each return year. Dead fish are sampled for mark-type and scanned for coded wire tag detetcion in order to estimate system-specific mark-rate; however, there are often years with small mark-type sample sizes (n < 10), requiring the use of basin-wide mark rate estimates to split ETRS into stock-specific ETRS (i.e., natural-origin-returns (NOR) and hatchery-origin returns (HOR)). For Chinook salmon, redd count-based methodology is used to estimate ETRS in even years, where the total number of redds is multiplied by the assumed number of fish present on the redd (2.5 fish per redd). In odd years, pink salmon returns are often large and thus preclude the visual identification of redds, so an area-under-the-curve (AUC) methodology is used to esitmate ETRS. For coho salmon, the AUC methodology is used to estimate ETRS for each return year.
+
+This is a generalized script that calculates stock-specific ETRS for Chinook, coho, and pink salmon across various systems surveyed in Disctrict 11 (i.e., Puyallup, East Kitsap, and South Sound) for the current return year. The approach taken attempts to replicate the traditional Excel workbook approach that has been used in past assessments. All analyses require R software [**(link)**](https://cran.r-project.org/) (v4.2.3) for data processing and summarizing results. At the top, we set Knitr options for output formatting and designate current year (for calculations) and forecast year (to direct file-writing). The top chunk also loads all packages required by the script and designates working directories or creates them if necessary.
+
+The current parameterization of this script calculates ETRS for the following species using spawning ground survey indices from the listed systems:
+
+`r if(params$sp=="Chinook" & params$system=="Puyallup River"){"
+  * Chinook
+    + Puyallup River
+      * Boise Creek
+      * Canyon Falls
+      * Clear Creek
+      * Fennel Creek
+      * Kapowsin Creek
+      * Salmon Creek + Trib
+      * South Prairie Creek
+      * Wilkeson Creek
+    + White River
+"}`
+
+`r if(params$sp=="Coho" & params$system=="Puyallup River"){"
+  * Coho
+    + Puyallup River
+      * Canyon Falls
+      * Coal Mine
+      * Fennel Creek (lower section)
+      * Fiske Creek
+      * Spiketon
+"}`
+
+`r if(params$sp=="Coho" & params$system=="East Kitsap"){"
+  * Coho
+    + East Kitsap
+      * Salmonberry      (15.0188; WDFW;   RM 1.6-2.1)
+      * Blackjack        (15.0203; Tribes; RM 5.2-6.3)
+      * Little Blackjack (15.0206; WDFW;   RM 0.4-1.0)
+      * Chico-Wildcat    (15.0229; Tribes; RM 2.6-5.0)
+      * Lost             (15.0234; Tribes; RM 0.0-1.9)
+"}`
+
+`r if(params$sp=="Coho" & params$system=="South Sound"){"
+  * Coho
+    + South Sound
+      * Woodland
+      * Perry
+      * Skookum + Trib
+      * Rocky
+      * Goldsboro
+      * Cranberry
+      * Sherwood
+      * Coulter
+      * Rocky
+"}`
+
+`r if(params$sp=="Steelhead"){"
+  * Steelhead
+    + Puyallup River
+"}`
+
+
+
+```{r setup, message = FALSE}
+# rm(list=ls())
+options(width = 100, kableExtra.auto_format = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+
+curr_yr    <-as.numeric(params$current_year) # year of new data
+fore_yr    <-as.numeric(params$current_year)+1 # year forecasting for
+data_pull  <-TRUE
+
+### Load libraries
+library(ggplot2);library(readxl);library(ggh4x);library(dplyr);library(MuMIn);library(kableExtra);library(ggthemes);library(tidyr);
+library(Hmisc);library(corrplot);library(data.table);library(purrr);library(tibble);library(rmdformats);library(janitor);
+library(odbc);library(RODBC);library(DBI);library(lubridate);library(RJSONIO);library(RCurl);library(httr);library(jsonlite);
+
+### Set up drives
+drive_sp   <-paste0("S:/FP/FishMgmt/District 11/escapement_forecast_data/",params$sp,"/")
+
+if(params$system=="Puyallup River"){
+  wria_id <-10
+  ## Puyallup drives
+  drive_puy          <-paste0(drive_sp,"Puyallup River/")
+  # Escapement folders
+  drive_puy_esc      <-paste0(drive_puy,curr_yr,"_Escapement/")
+  drive_puy_esc_next <-paste0(drive_puy,fore_yr,"_Escapement/")
+  if(!dir.exists(drive_puy_esc)){dir.create(drive_puy_esc,showWarnings = FALSE)}
+  if(!dir.exists(drive_puy_esc_next)){dir.create(drive_puy_esc_next,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_puy_esc_next,fore_yr,"_Data"))){dir.create(paste0(drive_puy_esc_next,fore_yr,"_Data"),showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_puy_esc_next,fore_yr,"_Outputs"))){dir.create(paste0(drive_puy_esc_next,fore_yr,"_Outputs"),showWarnings = FALSE)}
+  new_data_puy       <-paste0(drive_puy_esc,curr_yr,"_Data/")
+  new_outputs_puy    <-paste0(drive_puy_esc,curr_yr,"_Outputs/")
+  if(!dir.exists(new_data_puy)){dir.create(new_data_puy,showWarnings = FALSE)}
+  if(!dir.exists(new_outputs_puy)){dir.create(new_outputs_puy,showWarnings = FALSE)}
+  # Forecast folders
+  drive_puy_fore      <-paste0(drive_puy,fore_yr,"_Forecast")
+  drive_puy_fore_next <-paste0(drive_puy,fore_yr+1,"_Forecast")
+  if(!dir.exists(drive_puy_fore)){dir.create(drive_puy_fore,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_puy_fore,"/",curr_yr,"_Outputs"))){dir.create(paste0(drive_puy_fore,"/",curr_yr,"_Outputs"),showWarnings = FALSE)}
+  if(!dir.exists(drive_puy_fore_next)){dir.create(drive_puy_fore_next,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_puy_fore_next,"/",fore_yr,"_Data"))){dir.create(paste0(drive_puy_fore_next,"/",fore_yr,"_Data"),showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_puy_fore_next,"/",fore_yr,"_Outputs"))){
+    dir.create(paste0(drive_puy_fore_next,"/",fore_yr,"_Outputs"),showWarnings = FALSE)}
+  
+  if(params$sp!="Chinook"){eval_white <-FALSE}
+  if(params$sp=="Chinook"){
+    ## Switch for chunk eval (eval=TRUE run White River chunk if params$sp=="Chinook")
+    eval_white           <-TRUE  
+    ## White drives
+    drive_white          <-paste0(drive_sp,"White River/")
+    # Escapement folders
+    drive_white_esc      <-paste0(drive_white,curr_yr,"_Escapement/")
+    drive_white_esc_next <-paste0(drive_white,fore_yr,"_Escapement/")
+    if(!dir.exists(drive_white_esc)){dir.create(drive_white_esc,showWarnings = FALSE)}
+    if(!dir.exists(drive_white_esc_next)){dir.create(drive_white_esc_next,showWarnings = FALSE)}
+    if(!dir.exists(paste0(drive_white_esc_next,fore_yr,"_Data"))){dir.create(paste0(drive_white_esc_next,fore_yr,"_Data"),showWarnings = FALSE)}
+    if(!dir.exists(paste0(drive_white_esc_next,fore_yr,"_Outputs"))){
+      dir.create(paste0(drive_white_esc_next,fore_yr,"_Outputs"),showWarnings = FALSE)}
+    new_data_white       <-paste0(drive_white_esc,curr_yr,"_Data/")
+    new_outputs_white    <-paste0(drive_white_esc,curr_yr,"_Outputs/")
+    if(!dir.exists(new_data_white)){dir.create(new_data_white,showWarnings = FALSE)}
+    if(!dir.exists(new_outputs_white)){dir.create(new_outputs_white,showWarnings = FALSE)}
+    # Forecast folders
+    drive_white_fore      <-paste0(drive_white,fore_yr,"_Forecast")
+    drive_white_fore_next <-paste0(drive_white,fore_yr+1,"_Forecast")
+    if(!dir.exists(drive_white_fore)){dir.create(drive_white_fore,showWarnings = FALSE)}
+    if(!dir.exists(paste0(drive_white_fore,"/",curr_yr,"_Outputs"))){
+      dir.create(paste0(drive_white_fore,"/",curr_yr,"_Outputs"),showWarnings = FALSE)}
+    if(!dir.exists(drive_white_fore_next)){dir.create(drive_white_fore_next,showWarnings = FALSE)}
+    if(!dir.exists(paste0(drive_white_fore_next,"/",fore_yr,"_Data"))){
+      dir.create(paste0(drive_white_fore_next,"/",fore_yr,"_Data"),showWarnings = FALSE)}
+    if(!dir.exists(paste0(drive_white_fore_next,"/",fore_yr,"_Outputs"))){
+      dir.create(paste0(drive_white_fore_next,"/",fore_yr,"_Outputs"),showWarnings=FALSE)}
+  }
+}
+
+if(params$system=="East Kitsap"){
+  eval_white <-FALSE
+  wria_id <-15
+  ## East Kitsap drives
+  drive_EK          <-paste0(drive_sp,"East Kitsap/")
+  # Escapement folders
+  drive_EK_esc      <-paste0(drive_EK,curr_yr,"_Escapement/")
+  drive_EK_esc_next <-paste0(drive_EK,fore_yr,"_Escapement/")
+  if(!dir.exists(drive_EK_esc)){dir.create(drive_EK_esc,showWarnings = FALSE)}
+  if(!dir.exists(drive_EK_esc_next)){dir.create(drive_EK_esc_next,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_EK_esc_next,fore_yr,"_Data"))){dir.create(paste0(drive_EK_esc_next,fore_yr,"_Data"),showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_EK_esc_next,fore_yr,"_Outputs"))){dir.create(paste0(drive_EK_esc_next,fore_yr,"_Outputs"),showWarnings = FALSE)}
+  new_data_EK        <-paste0(drive_EK_esc,curr_yr,"_Data/")
+  new_outputs_EK    <-paste0(drive_EK_esc,curr_yr,"_Outputs/")
+  if(!dir.exists(new_data_EK)){dir.create(new_data_EK,showWarnings = FALSE)}
+  if(!dir.exists(new_outputs_EK)){dir.create(new_outputs_EK,showWarnings = FALSE)}
+  # Forecast folders
+  drive_EK_fore      <-paste0(drive_EK,fore_yr,"_Forecast")
+  drive_EK_fore_next <-paste0(drive_EK,fore_yr+1,"_Forecast")
+  if(!dir.exists(drive_EK_fore)){dir.create(drive_EK_fore,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_EK_fore,"/",curr_yr,"_Outputs"))){dir.create(paste0(drive_EK_fore,"/",curr_yr,"_Outputs"),showWarnings = FALSE)}
+  if(!dir.exists(drive_EK_fore_next)){dir.create(drive_EK_fore_next,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_EK_fore_next,"/",fore_yr,"_Data"))){dir.create(paste0(drive_EK_fore_next,"/",fore_yr,"_Data"),showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_EK_fore_next,"/",fore_yr,"_Outputs"))){
+    dir.create(paste0(drive_EK_fore_next,"/",fore_yr,"_Outputs"),showWarnings = FALSE)}
+}
+
+if(params$system=="South Sound"){
+  eval_white <-FALSE
+  wria_id <-c(13,14,15)
+  ## East Kitsap drives
+  drive_SS          <-paste0(drive_sp,"South Sound/")
+  # Escapement folders
+  drive_SS_esc      <-paste0(drive_SS,curr_yr,"_Escapement/")
+  drive_SS_esc_next <-paste0(drive_SS,fore_yr,"_Escapement/")
+  if(!dir.exists(drive_SS_esc)){dir.create(drive_SS_esc,showWarnings = FALSE)}
+  if(!dir.exists(drive_SS_esc_next)){dir.create(drive_SS_esc_next,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_SS_esc_next,fore_yr,"_Data"))){dir.create(paste0(drive_SS_esc_next,fore_yr,"_Data"),showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_SS_esc_next,fore_yr,"_Outputs"))){dir.create(paste0(drive_SS_esc_next,fore_yr,"_Outputs"),showWarnings = FALSE)}
+  new_data_SS        <-paste0(drive_SS_esc,curr_yr,"_Data/")
+  new_outputs_SS    <-paste0(drive_SS_esc,curr_yr,"_Outputs/")
+  if(!dir.exists(new_data_SS)){dir.create(new_data_SS,showWarnings = FALSE)}
+  if(!dir.exists(new_outputs_SS)){dir.create(new_outputs_SS,showWarnings = FALSE)}
+  # Forecast folders
+  drive_SS_fore      <-paste0(drive_SS,fore_yr,"_Forecast")
+  drive_SS_fore_next <-paste0(drive_SS,fore_yr+1,"_Forecast")
+  if(!dir.exists(drive_SS_fore)){dir.create(drive_SS_fore,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_SS_fore,"/",curr_yr,"_Outputs"))){dir.create(paste0(drive_SS_fore,"/",curr_yr,"_Outputs"),showWarnings = FALSE)}
+  if(!dir.exists(drive_SS_fore_next)){dir.create(drive_SS_fore_next,showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_SS_fore_next,"/",fore_yr,"_Data"))){dir.create(paste0(drive_SS_fore_next,"/",fore_yr,"_Data"),showWarnings = FALSE)}
+  if(!dir.exists(paste0(drive_SS_fore_next,"/",fore_yr,"_Outputs"))){
+    dir.create(paste0(drive_SS_fore_next,"/",fore_yr,"_Outputs"),showWarnings = FALSE)}
+}
+```
+
+# **Area-under-the-curve or redd-based calculations**
+
+---
+
+* Data inputs:
+  + WDFW spawning ground survey data (i.e., live counts, dead counts, mark-type samples)
+  + Tribal spawning ground survey data
+  + Historic stock-specific ETRS time series
+  + Historic percentage of hatchery-origin-spawners (pHOS) time series
+* Methods:
+  + Pull WDFW spawning ground survey data (i.e., live counts, redd counts, and mark-type samples) from FTS server
+  + Read in tribal survey data
+  + Sum live counts for each system & time step
+    * Check live counts for systems that need a 0-week before or after and add them
+    * Identify survey counts <4 days apart and and combine them
+  + Calculate AUC for each system, adjusted for a stream life of 10 days; filter for systems used as indices
+  + Plot catch curves for index systems
+  + For even-year Chinook returns, calculate redd-based escapement; Chinook AUC in these years is also adjusted for the mean Redd/AUC ratio  
+
+
+```{r AUC, include=T, fig.cap = c("**Figure 1.** Live counts recorded on spawning ground surveys over the spawning season."), fig.topcaption = TRUE}
+# ,"**Figure 1b.** Live counts recorded on spwaning ground surveys over the spawning season for systems with data this year but not included in ETRS calculations historically."
+################################################################################
+##### Create function for checking odd or even year
+check_odd_even <-function(number){if(number %% 2 == 0){return("Even")}else{return("Odd")}}
+
+##### Pull WDFW data from SGS or FTS server
+if(curr_yr>2022){
+  if(data_pull == "TRUE"){
+    # #### Pull in FTS_SurveyCounts data
+    # Sample queries
+    con <- odbcConnect("FTS_readonly")
+  
+    # Survey events
+    survey_events <-sqlQuery(con, as.is = TRUE, "SELECT * FROM fts.vw_survey_event_summary
+                             WHERE data_source_unit = 'District 11'
+                             ORDER BY survey_date DESC;")
+  
+    # Live Fish
+    live_fish <-sqlQuery(con, as.is = TRUE, "SELECT * FROM fts.vw_survey_live_detail
+                             WHERE data_source_unit = 'District 11'
+                             ORDER BY survey_date DESC;")
+    # Dead Fish
+    dead_fish <-sqlQuery(con, as.is = TRUE, "SELECT * FROM fts.vw_survey_dead_detail
+                             WHERE data_source_unit = 'District 11'
+                             ORDER BY survey_date DESC;")
+    # Live Fish
+    redd_count <-sqlQuery(con, as.is = TRUE, "SELECT * FROM fts.vw_redd_list
+                             WHERE data_source_unit = 'District 11'
+                             ORDER BY survey_date DESC;")
+  
+    close(con)
+    survey_events_wria <-dplyr::filter(survey_events, wria %in% as.character(wria_id))
+    live_fish_wria     <-dplyr::filter(live_fish, wria %in% as.character(wria_id) & species == params$sp)
+    dead_fish_wria     <-dplyr::filter(dead_fish, wria %in% as.character(wria_id) & species == params$sp)
+    redd_count_wria    <-dplyr::filter(redd_count, wria %in% as.character(wria_id) & species == params$sp)
+    dead_fish_d11      <-dplyr::filter(dead_fish, species == params$sp)
+  }
+
+  if(params$system=="Puyallup River"){
+    if(data_pull == "TRUE"){
+      live_fish_rest   <-dplyr::filter(live_fish_wria, !(stream_catalog_code %in% c("10.0406")))
+      live_fish_fennel <-dplyr::filter(live_fish_wria, stream_catalog_code == "10.0406" & reach_description=="RM 1.1 - RM 0")
+      live_fish_wria   <-rbind(live_fish_rest, live_fish_fennel)
+      
+      write.csv(survey_events_wria,paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_SurveyEvents.csv"))
+      write.csv(live_fish_wria,paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_SurveyCounts.csv"))
+      write.csv(dead_fish_d11,paste0(new_data_puy,curr_yr,"_",params$sp,"_WDFW_deadfishd11.csv"))
+      write.csv(dead_fish_wria,paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_CarcassSampling.csv"))
+      write.csv(redd_count_wria,paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_ReddDetail.csv"))
+    }
+    #####
+    survey_events_wria <-read.csv(paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_SurveyEvents.csv"))
+    live_fish_wria     <-read.csv(paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_SurveyCounts.csv"))
+    dead_fish_wria     <-read.csv(paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_CarcassSampling.csv"))
+    dead_fish_d11      <-read.csv(paste0(new_data_puy,curr_yr,"_",params$sp,"_WDFW_deadfishd11.csv"))
+    redd_count_wria    <-read.csv(paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_WDFW_ReddDetail.csv"))
+  }
+  if(params$system=="East Kitsap"){
+    if(data_pull == "TRUE"){
+      # write.csv(survey_events_wria,paste0(new_data_EK,curr_yr,"_WRIA 15_",params$sp,"_WDFW_SurveyEvents.csv"))
+      # write.csv(live_fish_wria,paste0(new_data_EK,curr_yr,"_WRIA 15_",params$sp,"_WDFW_SurveyCounts.csv"))
+      # write.csv(dead_fish_d11,paste0(new_data_EK,curr_yr,"_",params$sp,"_WDFW_deadfishd11.csv"))
+      # write.csv(dead_fish_wria,paste0(new_data_EK,curr_yr,"_WRIA 15_",params$sp,"_WDFW_CarcassSampling.csv"))
+    }
+    #####
+    survey_events_wria <-read.csv(paste0(new_data_EK,curr_yr,"_WRIA 15_",params$sp,"_WDFW_SurveyEvents.csv"))
+    live_fish_wria     <-read.csv(paste0(new_data_EK,curr_yr,"_WRIA 15_",params$sp,"_WDFW_SurveyCounts.csv"))
+    dead_fish_wria     <-read.csv(paste0(new_data_EK,curr_yr,"_WRIA 15_",params$sp,"_WDFW_CarcassSampling.csv"))
+    dead_fish_d11      <-read.csv(paste0(new_data_EK,curr_yr,"_",params$sp,"_WDFW_deadfishd11.csv"))
+  }
+  if(params$system=="South Sound"){
+    if(data_pull == "TRUE"){
+      survey_events_rest  <-dplyr::filter(survey_events_wria, !(stream_catalog_code %in% c("13.0006", "14.0035","14.0051", "14.0094",
+                                                                                           "15.0002","15.0015")))
+      survey_events_woodl <-dplyr::filter(survey_events_wria, stream_catalog_code == "13.0006" &
+                                                              reach_description %in% c("RM 3.1 - RM 2.8", "RM 2.8 - RM 2.6"))
+      survey_events_golds <-dplyr::filter(survey_events_wria, stream_catalog_code == "14.0035" & reach_description=="RM 11 - RM 10")
+      survey_events_cranb <-dplyr::filter(survey_events_wria, stream_catalog_code == "14.0051" & reach_description=="RM 3.5 - RM 2.6")
+      survey_events_sherw <-dplyr::filter(survey_events_wria, stream_catalog_code == "14.0094" & reach_description=="RM 13.1 - RM 12.9")
+      survey_events_coult <-dplyr::filter(survey_events_wria, stream_catalog_code == "15.0002" & reach_description=="RM 3.2 - RM 2.3")
+      survey_events_rocky <-dplyr::filter(survey_events_wria, stream_catalog_code == "15.0015" & reach_description=="RM 1.6 - RM 0.3")
+      survey_events_wria  <-rbind(survey_events_rest, survey_events_woodl, survey_events_golds, survey_events_cranb,
+                                  survey_events_sherw, survey_events_coult, survey_events_rocky)
+  
+      live_fish_rest  <-dplyr::filter(live_fish_wria, !(stream_catalog_code %in% c("13.0006", "14.0020", "14.0035", "14.0051",
+                                                                                   "14.0094","15.0002","15.0015")))
+      live_fish_woodl <-dplyr::filter(live_fish_wria, stream_catalog_code == "13.0006" &
+                                                              reach_description %in% c("RM 3.1 - RM 2.8", "RM 2.8 - RM 2.6"))
+      live_fish_skook <-dplyr::filter(live_fish_wria, stream_catalog_code == "14.0020" & reach_description=="RM 7.5 - RM 6.5")
+      live_fish_golds <-dplyr::filter(live_fish_wria, stream_catalog_code == "14.0035" & reach_description=="RM 11 - RM 10")
+      live_fish_cranb <-dplyr::filter(live_fish_wria, stream_catalog_code == "14.0051" & reach_description=="RM 3.5 - RM 2.6")
+      live_fish_sherw <-dplyr::filter(live_fish_wria, stream_catalog_code == "14.0094" & reach_description=="RM 13.1 - RM 12.9")
+      live_fish_coult <-dplyr::filter(live_fish_wria, stream_catalog_code == "15.0002" & reach_description=="RM 3.2 - RM 2.3")
+      live_fish_rocky <-dplyr::filter(live_fish_wria, stream_catalog_code == "15.0015" & reach_description=="RM 1.6 - RM 0.3")
+      live_fish_wria  <-rbind(live_fish_rest, live_fish_woodl, live_fish_skook, live_fish_golds,
+                              live_fish_cranb, live_fish_sherw, live_fish_coult, live_fish_rocky)
+  
+      write.csv(live_fish_wria,paste0(new_data_SS,curr_yr,"_WRIA 13-15_",params$sp,"_WDFW_SurveyCounts.csv"))
+      write.csv(dead_fish_wria,paste0(new_data_SS,curr_yr,"_WRIA 13-15_",params$sp,"_WDFW_CarcassSampling.csv"))
+    }
+  }
+  if(check_odd_even(curr_yr)=="Odd"){live_counts_wdfw            <-live_fish_wria[,c("survey_date","stream_catalog_code","fish_count")]}
+  if(check_odd_even(curr_yr)=="Even"){
+    redd_counts_wdfw                     <-redd_count_wria[,c("survey_date","stream_catalog_code","redd_count")]
+    redd_counts_wdfw$stream_catalog_code <-as.numeric(redd_counts_wdfw$stream_catalog_code)
+    redd_counts_wdfw                     <-aggregate(redd_count ~ survey_date+stream_catalog_code, data = redd_counts_wdfw, FUN = sum)
+    
+    live_fish_wria_trim                  <-live_fish_wria[,c("survey_date","stream_catalog_code","fish_count")]
+    fish_counts_wdfw                     <-aggregate(fish_count ~ survey_date+stream_catalog_code, data = live_fish_wria_trim, FUN = sum)
+
+    live_counts_wdfw                     <-left_join(fish_counts_wdfw, redd_counts_wdfw, by=c("survey_date","stream_catalog_code"))
+    live_counts_wdfw[is.na(live_counts_wdfw$redd_count),"redd_count"] <-0
+    live_counts_wdfw[is.na(live_counts_wdfw$fish_count),"fish_count"] <-0
+    
+    colnames(redd_counts_wdfw)  <-c("Date","StreamCatalogCode","Redds")
+
+  }
+  if(check_odd_even(curr_yr)=="Even"){colnames(live_counts_wdfw)  <-c("Date","StreamCatalogCode","Live","Redds")}
+  if(check_odd_even(curr_yr)=="Odd"){colnames(live_counts_wdfw)  <-c("Date","StreamCatalogCode","Live")}
+}
+
+if(curr_yr<2023){
+  ##### Pull in SGS_SurveyCounts data (SGS retired in 2023)
+  res  = GET("https://data.wa.gov/resource/idwx-fext.json", 
+             query = list(WRIA = as.character(wria_id), RunYear = curr_yr, species = paste0(params$sp, " Salmon")))
+  data = fromJSON(rawToChar(res$content),flatten=TRUE,simplifyDataFrame = FALSE)
+  live_counts_wdfw <-data %>% 
+                       map(unlist) %>% 
+                       map_df(bind_rows)
+  write.csv(live_counts_wdfw, paste0(drive_puy_esc,curr_yr,"_Data/",curr_yr,"_Puyallup River_",params$sp,"_WDFW_SurveyCounts.csv"),row.names=FALSE)
+  live_counts_wdfw$Date_yyyymmdd <-as.character(substr(live_counts_wdfw$surveydate,1,10))
+  live_counts_wdfw$livetotal     <-as.numeric(live_counts_wdfw$livetotal)
+  live_counts_wdfw[is.na(live_counts_wdfw$livetotal),"livetotal"] <-0
+  ###
+  live_counts_wdfw            <-live_counts_wdfw[,c("Date_yyyymmdd","streamcatalogcode","livetotal","newreddcount")]
+  colnames(live_counts_wdfw)  <-c("Date","StreamCatalogCode","Live","Redds")
+}
+
+##### Read in tribal data, format to match WDFW, & combine
+if(params$sp=="Chinook"){
+  survey_counts_tribe               <-read.csv(paste0(new_data_puy,curr_yr,"_WRIA 10_",params$sp,"_Tribal_SurveyCounts.csv"))
+  survey_counts_tribe               <-survey_counts_tribe[!(survey_counts_tribe$DATE.SURVEYED==""),] 
+  survey_counts_tribe$Date_yyyymmdd <-strptime(as.character(survey_counts_tribe$DATE.SURVEYED), "%m/%d/%Y")
+  survey_counts_tribe[is.na(survey_counts_tribe$LIVE),"LIVE"] <-0
+  
+  if(check_odd_even(curr_yr)=="Even"){
+    ###
+    live_counts_tribe           <-survey_counts_tribe[,c("Date_yyyymmdd","WRIA","LIVE","REDDS")] # using LIVE, not LIVE.ADULTS
+    colnames(live_counts_tribe) <-c("Date","StreamCatalogCode","Live","Redds")
+    live_counts_tribe$Date      <-as.character(live_counts_tribe$Date)
+    ###
+    ###
+    live_counts           <-rbind(live_counts_wdfw,live_counts_tribe)
+    live_counts           <-live_counts[,c("Date","StreamCatalogCode","Live","Redds")]
+  }
+  
+  if(check_odd_even(curr_yr)=="Odd"){
+    ###
+    live_counts_tribe           <-survey_counts_tribe[,c("Date_yyyymmdd","WRIA","LIVE")] # using LIVE, not LIVE.ADULTS
+    colnames(live_counts_tribe) <-c("Date","StreamCatalogCode","Live")
+    live_counts_tribe$Date      <-as.character(live_counts_tribe$Date)
+    ###
+    live_counts           <-rbind(live_counts_wdfw,live_counts_tribe)
+    live_counts           <-live_counts[,c("Date","StreamCatalogCode","Live")]
+  }
+  
+  ##### Trim months to August-December for Fall Chinook
+  start_date <-c(paste(curr_yr,"08","01",sep="-"))
+  end_date   <-c(paste(curr_yr+1,"02","01",sep="-"))
+  live_counts_fall <-dplyr::filter(live_counts_fixed, Date > start_date & Date < end_date)
+}
+
+if(params$sp=="Steelhead"){
+  survey_counts_tribe <-read.csv(paste0(new_data_puy,curr_yr,"_WRIA ",wria_id,"_",params$sp,"_Tribal_SurveyCounts.csv"))
+  live_counts_tribe <-data.frame(Date              = as.character(strptime(as.character(survey_counts_tribe$DATE), "%m/%d/%Y")),
+                                 StreamCatalogCode = survey_counts_tribe$WRIA,
+                                 Live              = survey_counts_tribe$LIVE)
+  live_counts_wdfw$StreamCatalogCode <-as.numeric(live_counts_wdfw$StreamCatalogCode) 
+
+  live_counts_fall <-rbind(live_counts_wdfw, live_counts_tribe)
+}
+
+if(params$sp=="Coho"){
+  if(params$system!="South Sound"){
+    if(params$syst=="Puyallup River"){
+      survey_counts_tribe <-read.csv(paste0(new_data_puy,curr_yr,"_WRIA ",wria_id,"_",params$sp,"_Tribal_SurveyCounts.csv"))
+    }
+    if(params$syst=="East Kitsap"){
+      survey_counts_tribe               <-read.csv(paste0(new_data_EK,curr_yr,"_WRIA ",wria_id,"_",params$sp,"_Tribal_SurveyCounts.csv"))
+      survey_counts_tribe[which(survey_counts_tribe$StreamName=="Wildcat Creek"),"StreamCatalogCode"] <-c("15.0229A")
+    }
+    # if(params$syst=="South Sound"){
+    #   survey_counts_tribe <-read.csv(paste0(new_data_SS,curr_yr,"_WRIA 13-15_",params$sp,"_Tribal_SurveyCounts.csv"))
+    # }
+    survey_counts_tribe               <-survey_counts_tribe[!(survey_counts_tribe$Date..mm.dd.yyyy.==""),]
+    survey_counts_tribe$Date_yyyymmdd <-as.character(strptime(survey_counts_tribe$Date..mm.dd.yyyy., "%m/%d/%Y"))
+    if("Live_Adult_Count_Total" %in% colnames(survey_counts_tribe)){
+      survey_counts_tribe[is.na(survey_counts_tribe$Live_Adult_Count_Total),"Live_Adult_Count_Total"] <-0
+      survey_counts_tribe_lives           <-survey_counts_tribe[,c("Date_yyyymmdd","StreamCatalogCode","Live_Adult_Count_Total")]
+      colnames(survey_counts_tribe_lives) <-colnames(live_counts_wdfw)
+    }
+    if("LIVE" %in% colnames(survey_counts_tribe)){
+      survey_counts_tribe[is.na(survey_counts_tribe$LIVE),"LIVE"] <-0
+      survey_counts_tribe_lives                                   <-survey_counts_tribe[,c("Date_yyyymmdd","StreamCatalogCode","LIVE")]
+      colnames(survey_counts_tribe_lives)                         <-colnames(live_counts_wdfw)
+    }
+  }
+
+  if(params$system!="South Sound"){live_counts <-rbind(live_counts_wdfw, survey_counts_tribe_lives)}
+  if(params$system=="South Sound"){live_counts <-rbind(live_counts_wdfw)}
+  
+  ##### Add zero-count weeks from survey_events to live_counts
+  streams <-unique(live_counts$StreamCatalogCode)
+  add_weeks <-list()
+  for(z in 1:length(streams)){
+    temp_live_df <-dplyr::filter(live_counts, StreamCatalogCode == streams[z])
+    temp_event_df <-dplyr::filter(survey_events_wria, stream_catalog_code == streams[z])
+    
+    live_dates <-unique(temp_live_df$Date)
+    survey_dates <-unique(temp_event_df$survey_date)
+    
+    if(length(live_dates) < length(survey_dates)){
+      missing_dates <-setdiff(survey_dates, live_dates)
+      add_weeks[[z]] <-as.data.frame(cbind(missing_dates,rep(streams[z], length(missing_dates)),rep(0,length(missing_dates))))
+    }
+  }
+  new_weeks <-map_df(add_weeks,~as.data.frame(.))
+  colnames(new_weeks) <-c("Date","StreamCatalogCode","Live")
+  new_weeks$Live <-as.numeric(new_weeks$Live)
+  if(params$system=="East Kitsap"){
+    if(sum(dplyr::filter(new_weeks, StreamCatalogCode == "15.0203")$Live)==0){
+      new_weeks <-dplyr::filter(new_weeks, StreamCatalogCode != "15.0203")
+    }
+  }
+  live_counts_fixed <-rbind(live_counts,new_weeks)
+
+  ##### Trim months to August-February for Fall Coho
+  start_date           <-c(paste(curr_yr,"08","01",sep="-"))
+  end_date <-c(paste(curr_yr+1,"03","01",sep="-"))
+  live_counts_fall <-dplyr::filter(live_counts_fixed, Date > start_date & Date < end_date)
+}
+
+################################################################################
+##### AUC-based escapement
+### Count number of sampling days per system
+systems      <-unique(live_counts_fall$StreamCatalogCode)
+system_dates <-matrix(data=NA,nrow=length(systems),ncol=2)
+
+for(s in 1:length(systems)){
+  system_dates[s,1] <-systems[s]
+  system_dates[s,2] <-length(unique(live_counts_fall[which(live_counts_fall$StreamCatalogCode==systems[s]),]$Date))
+}
+
+### Sum live counts for each system & time step 
+live_sums <-matrix(data=NA,nrow=sum(as.numeric(system_dates[,2])),ncol=3)
+
+for(s in 1:length(systems)){
+  dat   <-live_counts_fall[which(live_counts_fall$StreamCatalogCode==systems[s]),]
+  dates <-unique(dat$Date)
+  if(s==1){
+    for(i in 1:length(dates)){
+      live_sums[i,1] <-dates[i]
+      live_sums[i,2] <-sum(dat[which(dat$Date==dates[i]),]$Live)
+      live_sums[i,3] <-systems[s]
+    }
+  }
+  if(s>1){
+    for(i in 1:length(dates)){
+      live_sums[sum(is.na(live_sums[,1])==FALSE)+1,1] <-dates[i]
+      live_sums[sum(is.na(live_sums[,2])==FALSE)+1,2] <-sum(dat[which(dat$Date==dates[i]),]$Live)
+      live_sums[sum(is.na(live_sums[,3])==FALSE)+1,3] <-systems[s]
+    }
+  }
+}
+colnames(live_sums) <-c("Date","Live","System")
+live_sums           <-as.data.frame(live_sums)
+live_sums$Live      <-as.numeric(live_sums$Live)
+# live_sums$System    <-as.numeric(live_sums$System)
+
+live_sums_sort      <-live_sums[order(live_sums$System, live_sums$Date),] # reorder dataset so dates are in order
+
+### Checking 0-count surveys and flatlines
+# Exclude some
+systems <-unique(live_sums_sort$System)
+keep    <-NA
+for(z in 1:length(systems)){
+  dat <-dplyr::filter(live_sums_sort, System==systems[z])
+  if((sum(dat$Live))>0){keep[z] <-systems[z]}
+}
+keep_z <-keep[!is.na(keep)]
+
+### Add zero-weeks before/after if necessary
+live_sums_trim <-dplyr::filter(live_sums_sort, System %in% keep_z)
+systems_trim   <-unique(live_sums_trim$System)
+zeds_before    <-data.frame()
+zeds_after     <-data.frame()
+
+for(z in 1:length(systems_trim)){
+  dat <-dplyr::filter(live_sums_trim, System==systems_trim[z])
+  if(dat[1,"Live"]>0){
+    zed_row_before <-c(as.character(as.Date(dat[1,"Date"])-7), 0, dat[1,"System"])
+    zeds_before    <-rbind(zeds_before,zed_row_before)
+  }
+  if(dat[nrow(dat),"Live"]>0){
+    zed_row_after <-c(as.character(as.Date(dat[nrow(dat),"Date"])+7), 0, dat[nrow(dat),"System"])
+    zeds_after    <-rbind(zeds_after,zed_row_after)
+  }
+}
+if(nrow(zeds_before)>0){colnames(zeds_before)<-c("Date","Live","System")}
+if(nrow(zeds_after)>0){ colnames(zeds_after) <-c("Date","Live","System")}
+
+if(nrow(zeds_before)>0|nrow(zeds_after)>0){
+  live_sums_zeds      <-rbind(live_sums_trim,zeds_before,zeds_after)
+  live_sums_zeds$Live <-as.numeric(live_sums_zeds$Live)
+  live_sums_sort2     <-live_sums_zeds[order(live_sums_zeds$System, live_sums_zeds$Date),] # reorder dataset so dates are in order
+}
+if(nrow(zeds_before)==0&nrow(zeds_after)==0){
+  live_sums_sort2     <-live_sums_trim[order(live_sums_trim$System, live_sums_trim$Date),] # reorder dataset so dates are in order
+}
+
+### Identify survey counts <4 days apart
+systems     <-unique(live_sums_sort2$System)
+survey_gaps <-data.frame()
+
+for(s in 1:length(systems)){
+  dat           <-live_sums_sort2[which(live_sums_sort2$System==systems[s]),]
+  survey_gaps_s <-matrix(data=NA,nrow=length(dat$Date)-1,ncol=2)
+  for(i in 1:nrow(dat)){
+    if(i<nrow(dat)){
+      survey_gaps_s[i,1] <-systems[s]
+      survey_gaps_s[i,2] <-as.numeric(difftime(dat[i+1,1], dat[i,1], units = "days"))
+    }
+  }
+  if(s==1){survey_gaps <-survey_gaps_s}
+  if(s>1){survey_gaps  <-rbind(survey_gaps,survey_gaps_s)}
+}
+colnames(survey_gaps) <-c("System","Gap")
+survey_gaps           <-as.data.frame(survey_gaps)
+survey_gaps[,2]       <-as.numeric(survey_gaps[,2])
+
+### Combine survey counts that are <4 days apart
+survey_gaps_flag <-survey_gaps[which(survey_gaps[,2]<4),]
+fix_survey       <-unique(survey_gaps_flag[,"System"])
+
+for(d in 1:length(fix_survey)){
+  dat <-live_sums_sort2[which(live_sums_sort2$System==fix_survey[d]),]
+  for(i in 1:nrow(dat)){
+    if(i<nrow(dat)){
+      diff <-as.numeric(difftime(dat[i+1,1], dat[i,1], units = "days"))
+      if(diff<4){
+        dat[i,2] <-dat[i,2]+dat[i+1,2]
+        dat      <-dat[-(i+1),]
+        i=1}  
+    }
+  }
+  live_sums_fixed <-live_sums_sort2[which(live_sums_sort2$System!=fix_survey[d]),]
+  live_sums_fixed <-rbind(live_sums_fixed,dat)
+}
+live_sums_sort3 <-live_sums_fixed[order(live_sums_fixed$System, live_sums_fixed$Date),] # reorder dataset so dates are in order
+
+### Calculate AUC for each system
+live_AUC <-vector()
+systems  <-unique(live_sums_sort3$System)
+
+for(s in 1:length(systems)){
+  dat          <-live_sums_sort3[which(live_sums_sort3$System==systems[s]),]  
+  live_AUC_sys <-vector()
+  for(i in 1:nrow(dat)){
+    if(i==1){live_AUC_sys[i] <- 0}
+    if(i!=1){
+      date_diff       <-as.numeric(as.Date(dat[i,1])-as.Date(dat[i-1,1]))
+      live_diff       <-dat[i-1,2]-dat[i,2]
+      live_AUC_sys[i] <-(date_diff*dat[i,2])+(date_diff*live_diff)/2
+    }
+  }
+  if(s==1){live_AUC[1:nrow(dat)]                                       <-live_AUC_sys}
+  if(s!=1){live_AUC[(length(live_AUC)+1):(length(live_AUC)+nrow(dat))] <-live_AUC_sys}
+}
+live_sums_sort3[,4]          <-live_AUC
+colnames(live_sums_sort3)[4] <-"AUC"
+system_AUC                   <-aggregate(live_sums_sort3$AUC, list(live_sums_sort3$System), FUN=sum) 
+colnames(system_AUC)         <-c("system.id","AUC")
+
+# Systems included in escapement calcs
+if(params$sp=="Chinook"){systems_esc <-c("10.0022","10.0035","10.0036","10.0057","10.0406","10.0410","10.0429","10.0432","10.0600")}
+if(params$sp=="Coho"){
+  if(params$system=="Puyallup River"){systems_esc <-c("10.0406","10.0410","10.0432A","10.0453","10.0596")}
+  if(params$system=="East Kitsap"){systems_esc <-c("15.0188","15.0203","15.0206","15.0229A","15.0234")}
+  if(params$system=="South Sound"){systems_esc <-c("13.0006", "14.0001", "14.0020", "14.0024A", "14.0032", 
+                                                   "14.0035", "14.0051", "14.0094", "15.0002", "15.0015")}
+}
+if(params$sp=="Steelhead"){systems_esc <-unique(live_counts_fall$StreamCatalogCode)}
+
+system_AUC_alt <-dplyr::filter(system_AUC, !(system.id %in% systems_esc))
+system_AUC     <-dplyr::filter(system_AUC, system.id %in% systems_esc)
+
+### Excluded (system_AUC_alt)
+# excluded <-list("Canyon Creek"      = "10.0022A",
+#                 "Clearwater Creek"  = "10.0080",
+#                 "Huckleberry Creek" = "10.0253",
+#                 "Silver Springs"    = "10.0332A",
+#                 "Carbon River"      = "10.0413",
+#                 "Voights Creek"     = "10.0414",
+#                 "Coal Mine Creek"   = "10.0432A",
+#                 "Spiketon Creek"    = "10.0453",
+#                 "Fiske Creek"       = "10.0596")
+### Included (system_AUC)
+if(params$sp=="Steelhead"){
+  included <-list("Puyallup River"      = "10.0021",
+                  "Clear Creek"         = "10.0022", 
+                  "White River"         = "10.0031",
+                  "Salmon Creek"        = "10.0035",
+                  "Salmon Trib"         = "10.0036", 
+                  "Boise Creek"         = "10.0057",
+                  "Rushingwater"        = "10.0265",
+                  "Fennel Creek"        = "10.0406",
+                  "Canyon Falls"        = "10.0410",
+                  "Carbon River"        = "10.0413",
+                  "Voights Creek"       = "10.0414",
+                  "South Prairie Creek" = "10.0429",
+                  "Wilkeson Creek"      = "10.0432",
+                  "Kapowsin Creek"      = "10.0600",
+                  "Fox Creek"           = "10.0608",
+                  "Ledout Creek"        = "10.0620",
+                  "Kellog Creek"        = "10.0621",
+                  "Niesson Creek"       = "10.0622",
+                  "Mowich River"        = "10.0624")
+}
+if(params$sp=="Chinook"){
+  included <-list("Clear Creek"         = "10.0022", 
+                  "Salmon Creek"        = "10.0035",
+                  "Salmon Trib"         = "10.0036", 
+                  "Boise Creek"         = "10.0057",
+                  "Fennel Creek"        = "10.0406",
+                  "Canyon Falls"        = "10.0410",
+                  "South Prairie Creek" = "10.0429",
+                  "Wilkeson Creek"      = "10.0432",
+                  "Kapowsin Creek"      = "10.0600")
+}
+if(params$sp=="Coho"){
+  if(params$system=="Puyallup River"){
+    included <-list("Fennel Creek"    = "10.0406",
+                    "Canyon Falls"    = "10.0410",
+                    "Coal Mine Creek" = "10.0432A",
+                    "Spiketon Creek"  = "10.0453",
+                    "Fiske Creek"     = "10.0596")
+    included_deads <-list("Fennel Creek"    = "10.0406",
+                          "Canyon Falls"    = "10.0410",
+                          "Coal Mine Creek" = "10.0432A",
+                          "Spiketon Creek"  = "10.0453",
+                          "Fiske Creek"     = "10.0596",
+                          "Boise Creek"         = "10.0057",
+                          "Canyon Creek"        = "10.0022A",
+                          "Clear Creek"         = "10.0022",
+                          "Fox Creek"           = "10.0608",
+                          "Kapowsin Creek"      = "10.06",
+                          "Rody Creek"          = "10.0028",
+                          "Salmon Creek"        = "10.0035",
+                          "South Prairie Creek" = "10.0429",
+                          "Wilkeson Creek"      = "10.0432")
+  }
+  
+  if(params$system=="East Kitsap"){
+      included <-list("Salmonberry"      = "15.0188",
+                      "Blackjack"        = "15.0203",
+                      "Little Blackjack" = "15.0206",
+                      "Wildcat"          = "15.0229A",
+                      "Lost"             = "15.0234")
+  }
+  if(params$system=="South Sound"){
+      included <-list("Woodland Creek"          = "13.0006",
+                      "Perry Creek"             = "14.0001",
+                      "Skookum Creek"           =	"14.0020",
+                      "Skookum Trib"            = "14.0024A",
+                      "Rock Creek"              = "14.0032",
+                      "South Fork Goldsborough" = "14.0035",
+                      "Cranberry Creek"         =	"14.0051",
+                      "Sherwood Creek"          = "14.0094",
+                      "Coulter Creek"           =	"15.0002",
+                      "Rocky Creek"             = "15.0015") # Section 1
+  }
+}
+
+### Add column with system names
+# Included systems from WDFW (SPC) & PTI (rest)
+system_AUC$system.id         <-as.factor(system_AUC$system.id)
+system_AUC$system.name       <-as.factor(system_AUC$system.id)
+levels(system_AUC$system.name) <-included
+
+# Excluded systems from PTI (not included in escpaement table historically, but viable in future if historical ts exists)
+# system_AUC_alt$system.id         <-as.factor(system_AUC_alt$system.id)
+# system_AUC_alt$system.name       <-as.factor(system_AUC_alt$system.id)
+# levels(system_AUC_alt$system.id) <-excluded
+
+### AUC-based Figures & Tables
+# Included
+live_sums_fig                <-dplyr::filter(live_sums_sort3, System %in% systems_esc)
+live_sums_fig$System         <-as.factor(live_sums_fig$System)
+levels(live_sums_fig$System) <-included
+# Excluded
+# live_sums_fig_alt                <-dplyr::filter(live_sums_sort3, !(System %in% systems_esc))
+# live_sums_fig_alt$System         <-as.factor(live_sums_fig_alt$System)
+# levels(live_sums_fig_alt$System) <-excluded
+
+### Plot catch curves for systems included in escapement calculations
+ggplot(data=live_sums_fig)+
+  geom_line(aes(x=as.Date(Date),y=Live,group=System,color=System),linewidth=1)+
+  geom_point(aes(x=as.Date(Date),y=Live,group=System,color=System))+
+  facet_wrap(.~System,scales="free") +
+  xlab("Survey Date")+
+  ylab("Live Fish")+
+  {if(params$sp=="Chinook")theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))}+
+  {if(params$sp=="Coho")theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=1))}+
+  scale_x_date(breaks = as.Date(live_sums_fig$Date)[seq(1, length(as.Date(live_sums_fig$Date)), by = 1)])
+
+
+### Table of live count & AUC for systems included in escapement calculations
+live_sums_fig <-live_sums_fig[order(live_sums_fig$System, live_sums_fig$Date),] # reorder dataset so dates are in order
+
+if(params$sp=="Chinook"){
+  live_sums_fig[,c("Date","Live","AUC")] %>%
+    kbl(row.names = FALSE, caption = "Table 1. Live counts and area-under-the-curve (AUC) calculations for each week streams were surveyed.") %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Clear Creek"         = nrow(live_sums_fig[which(live_sums_fig$System=="Clear Creek"),]),
+                        "Salmon Creek"        = nrow(live_sums_fig[which(live_sums_fig$System=="Salmon Creek"),]),
+                        # "Salmon Trib"         = nrow(live_sums_fig[which(live_sums_fig$System=="Salmon Trib"),]),
+                        "Boise Creek"         = nrow(live_sums_fig[which(live_sums_fig$System=="Boise Creek"),]),
+                        "Fennel Creek"        = nrow(live_sums_fig[which(live_sums_fig$System=="Fennel Creek"),]),
+                        # "Canyon Falls"        = nrow(live_sums_fig[which(live_sums_fig$System=="Canyon Falls"),]),
+                        "South Prairie Creek" = nrow(live_sums_fig[which(live_sums_fig$System=="South Prairie Creek"),]),
+                        "Wilkeson Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Wilkeson Creek"),])#,
+                        # "Kapowsin Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Kapowsin Creek"),])
+                        ))
+}
+if(params$sp=="Coho" & params$system=="Puyallup River"){
+  live_sums_fig[,c("Date","Live","AUC")] %>%
+    kbl(row.names = FALSE, caption = "Table 1. Live counts and area-under-the-curve (AUC) calculations for each week streams were surveyed.") %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Fennel Creek"        = nrow(live_sums_fig[which(live_sums_fig$System=="Fennel Creek"),]),
+                        "Canyon Falls"        = nrow(live_sums_fig[which(live_sums_fig$System=="Canyon Falls"),]),
+                        "Coal Mine Creek" = nrow(live_sums_fig[which(live_sums_fig$System=="Coal Mine Creek"),]),
+                        "Spiketon Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Spiketon Creek"),]),
+                        "Fiske Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Fiske Creek"),])
+                        ))
+}
+if(params$sp=="Coho" & params$system=="East Kitsap"){
+  live_sums_fig[,c("Date","Live","AUC")] %>%
+    kbl(row.names = FALSE, caption = "Table 1. Live counts and area-under-the-curve (AUC) calculations for each week streams were surveyed.") %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Salmonberry"      = nrow(live_sums_fig[which(live_sums_fig$System=="Salmonberry"),]),
+                        "Blackjack"        = nrow(live_sums_fig[which(live_sums_fig$System=="Blackjack"),]),
+                        "Little Blackjack" = nrow(live_sums_fig[which(live_sums_fig$System=="Little Blackjack"),]),
+                        "Wildcat"          = nrow(live_sums_fig[which(live_sums_fig$System=="Wildcat"),]),
+                        "Lost"             = nrow(live_sums_fig[which(live_sums_fig$System=="Lost"),])
+                        ))
+}
+if(params$sp=="Coho" & params$system=="South Sound"){
+  live_sums_fig[,c("Date","Live","AUC")] %>%
+    kbl(row.names = FALSE, caption = "Table 1. Live counts and area-under-the-curve (AUC) calculations for each week streams were surveyed.") %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Woodland Creek"          = nrow(live_sums_fig[which(live_sums_fig$System=="Woodland Creek"),]),
+                        "Perry Creek"             = nrow(live_sums_fig[which(live_sums_fig$System=="Perry Creek"),]),
+                        "Skookum Creek"           = nrow(live_sums_fig[which(live_sums_fig$System=="Skookum Creek"),]),
+                        "Skookum Trib"            = nrow(live_sums_fig[which(live_sums_fig$System=="Skookum Trib"),]),
+                        "Rock Creek"              = nrow(live_sums_fig[which(live_sums_fig$System=="Rock Creek"),]),
+                        "South Fork Goldsborough" = nrow(live_sums_fig[which(live_sums_fig$System=="South Fork Goldsborough"),]),
+                        "Cranberry Creek"         = nrow(live_sums_fig[which(live_sums_fig$System=="Cranberry Creek"),]),
+                        "Sherwood Creek"          = nrow(live_sums_fig[which(live_sums_fig$System=="Sherwood Creek"),]),
+                        "Coulter Creek"           = nrow(live_sums_fig[which(live_sums_fig$System=="Coulter Creek"),]),
+                        "Rocky Creek"             = nrow(live_sums_fig[which(live_sums_fig$System=="Rocky Creek"),])
+                        ))
+}
+
+# ### Plot catch curves for systems not included in escapement calculations
+# ggplot(data=live_sums_fig_alt)+
+#   geom_line(aes(x=factor(Date),y=Live,group=System,color=System),linewidth=1)+
+#   geom_point(aes(x=factor(Date),y=Live,group=System,color=System))+
+#   facet_wrap(.~System,scales="free",ncol=3) +
+#   xlab("Survey Date")+
+#   ylab("Live Fish")+
+#   theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+# 
+# ### Table of live counts & AUC for systems not included in escapement calculations
+# live_sums_fig_alt <-live_sums_fig_alt[order(live_sums_fig_alt$System, live_sums_fig_alt$Date),] # reorder dataset so dates are in order
+# live_sums_fig_alt[,c("Date","Live","AUC")] %>%
+#   kbl(row.names = FALSE, caption = "Table 1b. Live counts and area-under-the-curve (AUC) calculations for each week streams were surveyed.") %>%
+#   kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+#   pack_rows(index = c("Canyon Creek"     = nrow(live_sums_fig_alt[which(live_sums_fig_alt$System=="Canyon Creek"),]), 
+#                       "Clearwater Creek" = nrow(live_sums_fig_alt[which(live_sums_fig_alt$System=="Clearwater Creek"),]),
+#                       "Hucleberry Creek" = nrow(live_sums_fig_alt[which(live_sums_fig_alt$System=="Huckleberry Creek"),]),
+#                       "Silver Springs"   = nrow(live_sums_fig_alt[which(live_sums_fig_alt$System=="Silver Springs"),]),
+#                       "Carbon River"     = nrow(live_sums_fig_alt[which(live_sums_fig_alt$System=="Carbon River"),]),
+#                       "Voights Creek"    = nrow(live_sums_fig_alt[which(live_sums_fig_alt$System=="Voights Creek"),])
+#                       ))
+
+```
+<br>
+<br>
+
+```{r redd}
+################################################################################
+##### Redd-based escapement
+if(params$system=="Puyallup River"){Redd_AUC <-read.csv(paste0(drive_puy_esc,"Puyallup River_Redd_AUC.csv"))}
+
+if(params$sp=="Chinook"){
+  carbon_1999    <-250
+  spc_1999       <-1422
+  puyallup_1999  <-195
+  puy_tribs_1999 <-113
+  fish_days      <-10   # time from entering fresh water to spawning (i.e., stream life est)
+  fpr            <-2.5 #fish per redd
+
+  if(check_odd_even(curr_yr)=="Even"){
+    # live_counts_wdfw[is.na(live_counts_wdfw$Redds),"Redds"] <-0
+    # live_counts_tribe[is.na(live_counts_tribe$Redds),"Redds"]     <-0
+    # Redds_wdfw            <-live_counts_wdfw[c("Date_yyyymmdd","StreamName","StreamCatalogCode","NewRedds")]
+    # colnames(Redds_wdfw)  <-c("Date","System_name","System_id","Redds")
+    # Redds_tribe           <-live_counts_tribe[c("Date_yyyymmdd","STREAM.NAME","WRIA","REDDS")]
+    # colnames(Redds_tribe) <-c("Date","System_name","System_id","Redds")
+    # Redds                 <-rbind(Redds_wdfw,Redds_tribe)
+    # systems               <-unique(Redds$System_id)
+    
+    Redds           <-live_counts[,c("Date","StreamCatalogCode","Redds")]
+    colnames(Redds) <-c("Date","System_id","Redds")
+    Redds$Redds     <-replace(Redds$Redds, is.na(Redds$Redds), 0)  
+    Redds$Redds     <-as.numeric(Redds$Redds)
+    systems         <-unique(Redds$System_id)
+    
+    redd_esc <-matrix(data=NA,nrow=length(systems),ncol=4)
+    for(s in 1:length(systems)){
+      redd_esc[s,1] <-curr_yr
+      redd_esc[s,2] <-systems[s]
+      redd_esc[s,3] <-sum(Redds[which(Redds$System_id==systems[s]),]$Redds)*fpr
+      redd_esc[s,4] <-sum(Redds[which(Redds$System_id==systems[s]),]$Redds)
+    }
+    colnames(redd_esc) <-c("year","system.id","redd_based_esc","redd_count")
+    redd_esc           <-as.data.frame(redd_esc)
+    
+    ##### Join new (system_AUC calc above) and old (read in csv) calcs
+    Redd_AUC_new                <-merge(system_AUC,redd_esc,by="system.id")
+    col_order                   <-c("year", "system.id", "system.name","redd_based_esc","AUC")
+    Redd_AUC_new                <-Redd_AUC_new[, col_order]
+    Redd_AUC_new$AUC_adj        <-Redd_AUC_new$AUC/fish_days
+    Redd_AUC_new$Redd_AUC_ratio <-as.numeric(Redd_AUC_new$redd_based_esc)/Redd_AUC_new$AUC_adj
+    Redd_AUC_curryr             <-Redd_AUC_new[,c("year","system.id","system.name","redd_based_esc","AUC","AUC_adj")]
+    colnames(Redd_AUC_curryr)[5] <-"AUC_fishdays"
+    Redd_AUC                    <-rbind(Redd_AUC,Redd_AUC_curryr)
+    Redd_AUC$year               <-as.numeric(Redd_AUC$year)
+    Redd_AUC$redd_based_esc     <-as.numeric(Redd_AUC$redd_based_esc)
+    
+    even_yrs <- Redd_AUC[lapply(Redd_AUC$year, "%%", 2) == 0,]
+    odd_yrs  <- Redd_AUC[lapply(Redd_AUC$year, "%%", 2) != 0,]
+    
+    ##### AUC adj for stream life & mean redd/AUC ratio
+    even_yrs$Redd_AUC_ratio <-even_yrs[,"redd_based_esc"]/even_yrs[,"AUC_adj"]
+    # SPC and Wilkeson get Redd_AUC_ratio adjustment based on mean Redd_AUC_ratio over time
+    even_yrs_SPC           <-even_yrs[which(even_yrs$system.name=="South Prairie Creek"),]
+    SPC_ReddAUC_ratio_mean <-mean(even_yrs_SPC$Redd_AUC_ratio)
+    spc_wilk_AUC           <-dplyr::filter(system_AUC,system.name=="South Prairie Creek")$AUC +
+                             dplyr::filter(system_AUC,system.name=="Wilkeson Creek")$AUC
+    spc_wilk_AUC_adj       <-(spc_wilk_AUC/fish_days)*SPC_ReddAUC_ratio_mean
+    
+    new_AUC <-dplyr::filter(even_yrs,year==curr_yr)
+    write.csv(Redd_AUC, paste0(drive_puy_esc_next,"/Puyallup River_Redd_AUC.csv"),row.names=FALSE)
+    
+    system_AUC <-new_AUC[,c("system.id","AUC_adj","system.name")]
+  }
+  
+  if(check_odd_even(curr_yr)=="Odd"){
+    ##### Join new (system_AUC calc above) and old (read in csv) calcs
+    system_AUC$AUC_fishdays   <-system_AUC$AUC/fish_days
+    system_AUC$year           <-rep(curr_yr,nrow(system_AUC))
+    system_AUC$redd_based_esc <-rep(NA, nrow(system_AUC))
+    system_AUC                <-system_AUC[,c("year","system.id","system.name","redd_based_esc","AUC","AUC_fishdays")]
+    even_yrs                  <-Redd_AUC[lapply(Redd_AUC$year, "%%", 2) == 0,]
+    
+    ##### AUC adj for stream life & mean redd/AUC ratio
+    even_yrs$Redd_AUC_ratio <-even_yrs[,"redd_based_esc"]/even_yrs[,"AUC_fishdays"]
+    
+    # SPC gets Redd_AUC_ratio adjustment based on mean Redd_AUC_ratio over time
+    even_yrs_SPC           <-even_yrs[which(even_yrs$system.name=="South Prairie Creek"),]
+    SPC_ReddAUC_ratio_mean <-mean(dplyr::filter(even_yrs_SPC,year >= 1998)$Redd_AUC_ratio)
+    spc_AUC_adj            <-dplyr::filter(system_AUC, system.name == "South Prairie Creek")$AUC_fishdays * 
+                             SPC_ReddAUC_ratio_mean
+    
+    # SPC & Wilkeson are combined to feed into carbon_esc w/ spc_1999 baseline value
+    spc_wilk_AUC_adj       <-spc_AUC_adj + dplyr::filter(system_AUC, system.name == "Wilkeson Creek")$AUC_fishdays
+  
+    # Clear Creek gets Redd_AUC_ratio adjustment based on mean Redd_AUC_ratio over time
+    even_yrs_clear           <-even_yrs[which(even_yrs$system.name=="Clear Creek"),]
+    Clear_ReddAUC_ratio_mean <-mean(dplyr::filter(even_yrs_clear,year >= 2002)$Redd_AUC_ratio)
+    clear_AUC_adj            <-dplyr::filter(system_AUC, system.name == "Clear Creek")$AUC_fishdays *
+                               Clear_ReddAUC_ratio_mean
+  
+    Redd_AUC[nrow(Redd_AUC)+1,] <-c(curr_yr, 10.0429, "South Prairie Creek", "NA", 
+                                    dplyr::filter(system_AUC, system.name == "South Prairie Creek")$AUC_fishdays,
+                                    spc_AUC_adj)
+    Redd_AUC[nrow(Redd_AUC)+1,] <-c(curr_yr, 10.0022, "Clear Creek", "NA", 
+                                    dplyr::filter(system_AUC, system.name == "Clear Creek")$AUC_fishdays,
+                                    clear_AUC_adj)
+    Redd_AUC$redd_based_esc <-as.numeric(Redd_AUC$redd_based_esc)
+    Redd_AUC$AUC_fishdays   <-as.numeric(Redd_AUC$AUC_fishdays)
+    Redd_AUC$AUC_adj        <-as.numeric(Redd_AUC$AUC_adj)
+    
+    Redd_AUC$year                    <-as.numeric(Redd_AUC$year)
+    odd_yrs                          <-Redd_AUC[lapply(Redd_AUC$year, "%%", 2) != 0,]
+    new_AUC                          <-dplyr::filter(odd_yrs,year==curr_yr)
+    new_AUC                          <-subset(new_AUC, select=-c(AUC_fishdays))
+    system_AUC_fishdays <-system_AUC[,c("year","system.id","system.name","redd_based_esc","AUC_fishdays")]
+    keepers             <-c("Salmon Creek","Boise Creek","Fennel Creek",
+                            "Canyon Falls","Wilkeson Creek","Kapowsin Creek")
+    system_AUC_fishdays              <-dplyr::filter(system_AUC_fishdays, system.name %in% keepers)
+    colnames(system_AUC_fishdays)[5] <-"AUC_adj"
+    new_AUC                          <-rbind(new_AUC,system_AUC_fishdays) 
+    
+    write.csv(Redd_AUC, paste0(drive_puy_esc_next,"/Puyallup River_Redd_AUC.csv"),row.names=FALSE)
+  }
+  
+  # Carbon River expansion
+  spc_ratio  <- spc_wilk_AUC_adj/spc_1999
+  carbon_esc <- carbon_1999*spc_ratio
+  
+  # Puyallup River expansion
+  puy_tribs_AUC   <-system_AUC %>% filter(system.name %in% c("Canyon Falls","Fennel Creek","Kapowsin Creek"))
+  
+  puy_tribs_y     <-(sum(puy_tribs_AUC$AUC_fishdays))*SPC_ReddAUC_ratio_mean
+  puy_tribs_ratio <-puy_tribs_y/puy_tribs_1999
+  puyallup_esc    <-puyallup_1999*puy_tribs_ratio
+  
+  # Table of AUC (odd yrs) or AUC & redd_based_esc (even yrs) data
+  if(check_odd_even(curr_yr)=="Even"){
+    Redd_AUC_new %>%
+      # dplyr::filter(.,year==max(year)) %>%
+      kbl(row.names = FALSE, 
+          caption = "Table 3. The sum of area-under-the-curve (AUC) adjusted for fish days and Redd/AUC ratio.", 
+          digits = 1) %>%
+      kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+  }
+  
+  if(check_odd_even(curr_yr)=="Odd"){
+    new_AUC[,c("year", "system.id", "system.name","AUC_adj")] %>%
+      # dplyr::filter(.,year==max(year)) %>%
+      kbl(row.names = FALSE, 
+          caption = "Table 3. The sum of area-under-the-curve (AUC) adjusted for fish days and Redd/AUC ratio.", 
+          digits = 1) %>%
+      kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+  }
+}
+
+if(params$sp=="Coho"){
+  new_AUC           <-aggregate(list(live_sums_fig['Live'],live_sums_fig['AUC']), by=live_sums_fig['System'], sum)
+  new_AUC$Year      <-rep(curr_yr,nrow(new_AUC))
+  colnames(new_AUC) <-c("system.name", "Live", "AUC_adj", "year")
+  
+  new_AUC[,c("year", "system.name","Live","AUC_adj")] %>%
+    # dplyr::filter(.,year==max(year)) %>%
+    kbl(row.names = FALSE, 
+        caption = "Table 2. The sum of area-under-the-curve (AUC) for each system.", 
+        digits = 1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+}
+
+if(params$sp=="Steelhead"){
+  ### Redd-based calcs
+  Redds_wdfw            <-live_counts[,c("Date","StreamCatalogCode","Redds")]
+  colnames(Redds)       <-c("Date","System_id","Redds")
+  Redds_tribe           <-live_counts_tribe[c("Date_yyyymmdd","STREAM.NAME","WRIA","REDDS")]
+  colnames(Redds_tribe) <-c("Date","System_name","System_id","Redds")
+  Redds                 <-rbind(Redds_wdfw,Redds_tribe)
+  Redds$Redds           <-replace(Redds$Redds, is.na(Redds$Redds), 0)  
+  Redds$Redds           <-as.numeric(Redds$Redds)
+  systems               <-unique(Redds$System_id)
+  
+  redd_esc <-matrix(data=NA,nrow=length(systems),ncol=4)
+  for(s in 1:length(systems)){
+    redd_esc[s,1] <-curr_yr
+    redd_esc[s,2] <-systems[s]
+    redd_esc[s,3] <-sum(Redds[which(Redds$System_id==systems[s]),]$Redds)*fpr
+    redd_esc[s,4] <-sum(Redds[which(Redds$System_id==systems[s]),]$Redds)
+  }
+  colnames(redd_esc) <-c("year","system.id","redd_based_esc","redd_count")
+  redd_esc           <-as.data.frame(redd_esc)
+  
+  Redd_AUC_new %>%
+    # dplyr::filter(.,year==max(year)) %>%
+    kbl(row.names = FALSE, 
+        caption = "Table 3. The sum of area-under-the-curve (AUC) adjusted for fish days and Redd/AUC ratio.", 
+        digits = 1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+
+  
+  ### Sum of AUC
+  new_AUC           <-aggregate(list(live_sums_fig['Live'],live_sums_fig['AUC']), by=live_sums_fig['System'], sum)
+  new_AUC$Year      <-rep(curr_yr,nrow(new_AUC))
+  colnames(new_AUC) <-c("system.name", "Live", "AUC_adj", "year")
+  
+  new_AUC[,c("year", "system.name","Live","AUC_adj")] %>%
+    # dplyr::filter(.,year==max(year)) %>%
+    kbl(row.names = FALSE, 
+        caption = "Table 2. The sum of area-under-the-curve (AUC) for each system.", 
+        digits = 1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+}
+```
+  
+
+```{r white_esc, eval=eval_white, fig.width=c(6,6), fig.height=c(2,4), fig.cap=c("**Figure 2.** Total fish passed at Mud Mountain Dam.", "**Figure 3.** Total UM, HOR, and AP fish at Mud Mountain Dam."), fig.topcaption = TRUE}
+
+if(params$sp=="Chinook"){
+  counts      <-read.csv(paste0(drive_white_esc,"counts.csv"))
+  counts_new  <-read.csv(paste0(new_data_white,curr_yr,"_White River_",params$sp,"_MMD_Counts.csv"))
+  fall_AD_MMD <-read.csv(paste0(new_data_white,curr_yr,"_White River_",params$sp,"_MMD_AdClipped_fall.csv")) # Fall Chinook counts at MMD
+  misc_dat    <-read.csv(paste0(drive_sp,curr_yr,"_Puyallup Basin_",params$sp," Misc Data.csv"))
+  NOR_ass     <-read.csv(paste0(drive_white_esc,"WRH_DNA_StockStructure.csv")) # DNA sampling at WRH
+
+  if(curr_yr>=2024){
+
+    # 3-week moving average expansion method for unsampled fish
+    counts_new[is.na(counts_new)] <-0
+    counts_new$wild_total         <-counts_new$Wild.hauled + counts_new$Wild.to.hatchery
+    counts_new$AP_total           <-counts_new$Acclimation.Hauled + counts_new$Acclimation.to.Hatchery
+    counts_new$hatchery_total     <-counts_new$HOR.hauled + counts_new$HOR.to.hatchery
+
+    # Add new year of raw count data to master
+    counts[nrow(counts)+1,1:5] <-c(curr_yr,"Adults",sum(counts_new$wild_total),sum(counts_new$hatchery_total),sum(counts_new$AP_total))
+    counts[nrow(counts)+1,1:5] <-c(curr_yr,"Jacks",sum(counts_new$W_Jack),sum(counts_new$H_Jack),sum(counts_new$A_Jack))
+    counts$UM                  <-as.numeric(counts$UM)
+    counts$HOR                 <-as.numeric(counts$HOR)
+    counts$AP                  <-as.numeric(counts$AP)
+    
+    counts_new_trim <-counts_new[,c("Date", "Week", "wild_total", "W_Jack", "AP_total", "A_Jack", "hatchery_total", "H_Jack", 
+                                    "PNNL", "Ad.Clipped", "Unsampled", "U_Jacks")]
+    counts_new_week <-aggregate(.~Week, data=subset(counts_new_trim, select=-c(Date)), FUN=sum)
+
+    # !!! These were additional fish that Jason added to the count data before expansion; unclear where they dataset is (PNNL study)
+    # week 33 sum doesn't match counts_new_week$PNNL
+    extras <-data.frame(week       =c(30,31,32,33,34),
+                        wild_total =c(15,14,16,17,4),
+                        W_Jack     =c(0,1,1,3,1),
+                        AP_total   =c(26,13,13,11,3),
+                        A_Jack     =c(1,0,1,0,2))
+
+    counts_new_week[counts_new_week$Week %in% c(30,31,32,33,34),
+                    c("wild_total", "W_Jack", "AP_total", "A_Jack")] <-counts_new_week[counts_new_week$Week %in% c(30,31,32,33,34),
+                                                                                       c("wild_total", "W_Jack", "AP_total", "A_Jack")] + extras[,-1]
+    unsamp_weeks_df <-counts_new_week[which(counts_new_week$Unsampled > 0),]
+    
+    unsamp_weeks <-unique(unsamp_weeks_df$Week)
+    exp_all      <-list()
+    
+    for(i in 1:length(unsamp_weeks)){
+      temp_df <-dplyr::filter(counts_new_week, Week %in% c(unsamp_weeks[i]-1,unsamp_weeks[i],unsamp_weeks[i]+1))
+      # wild adults
+      prop_W_A <-sum(temp_df$wild_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      W_A_exp  <-(prop_W_A * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$wild_total
+      # wild jacks
+      prop_W_J <-sum(temp_df$W_Jack)/sum(temp_df$W_Jack, temp_df$A_Jack, temp_df$H_Jack, temp_df$U_Jack)
+      W_J_exp  <-(prop_W_J * dplyr::filter(temp_df, Week==unsamp_weeks[i])$U_Jacks) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$W_Jack
+      # acclimation pond adults
+      prop_AP_A <-sum(temp_df$AP_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      AP_A_exp  <-(prop_AP_A * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$AP_total
+      # acclimation pond jacks
+      prop_AP_J <-sum(temp_df$A_Jack)/sum(temp_df$W_Jack, temp_df$A_Jack, temp_df$H_Jack, temp_df$U_Jacks)
+      AP_J_exp  <-(prop_AP_J * dplyr::filter(temp_df, Week==unsamp_weeks[i])$U_Jacks) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$A_Jack
+      # hatchery adults
+      prop_H_A <-sum(temp_df$hatchery_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      H_A_exp  <-(prop_H_A * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$hatchery_total
+      # hatchery jacks
+      prop_H_J <-sum(temp_df$H_Jack)/sum(temp_df$W_Jack, temp_df$A_Jack, temp_df$H_Jack, temp_df$U_Jacks)
+      H_J_exp  <-(prop_H_J * dplyr::filter(temp_df, Week==unsamp_weeks[i])$U_Jacks) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$H_Jack
+      # fall adults
+      prop_AD <-sum(temp_df$Ad.Clipped)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      AD_exp  <-(prop_AD * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$Ad.Clipped
+      
+      Unsamp_A_exp <-sum(W_A_exp, AP_A_exp, H_A_exp, AD_exp) - sum(temp_df[temp_df$Week==unsamp_weeks[i],"wild_total"], temp_df[temp_df$Week==unsamp_weeks[i],"AP_total"],
+                                                                   temp_df[temp_df$Week==unsamp_weeks[i],"hatchery_total"],
+                                                                   temp_df[temp_df$Week==unsamp_weeks[i],"Ad.Clipped"])
+      Unsamp_J_exp <-sum(W_J_exp, AP_J_exp, H_J_exp) - sum(temp_df[temp_df$Week==unsamp_weeks[i],"W_Jack"], temp_df[temp_df$Week==unsamp_weeks[i],"A_Jack"],
+                                                                   temp_df[temp_df$Week==unsamp_weeks[i],"H_Jack"])
+      exp_all[[i]] <-c(W_A_exp, W_J_exp, AP_A_exp, AP_J_exp, H_A_exp, H_J_exp, AD_exp, Unsamp_A_exp, Unsamp_J_exp)
+    }
+    unsamp                          <-as.data.frame(cbind(unsamp_weeks,matrix(unlist(exp_all), nrow=length(unsamp_weeks), byrow=TRUE)))
+    unsamp[is.na(unsamp)] <-0
+    colnames(unsamp) <-c("Week", "W_A_exp", "W_J_exp", "AP_A_exp", "AP_J_exp", "H_A_exp", "H_J_exp", "AD_exp", "Unsamp_A_exp", "Unsamp_J_exp")
+  }
+
+  if(curr_yr<2024){
+    # Separate mmd data into counts stock structure (UM/NOR, HOR, AP), add
+    UM_adults_new  <-dplyr::filter(counts_new,Category=="Wild Adults")$Total +
+                     dplyr::filter(counts_new,Category=="Broodstock Taken to Hatchery")$Total
+    HOR_adults_new <-dplyr::filter(counts_new,Category=="Hatchery Adults to Hatchery")$Total +
+                     dplyr::filter(counts_new,Category=="Hatchery Adults Hauled")$Total
+    AP_adults_new  <-dplyr::filter(counts_new,Category=="Acclimation Pond Adults Hauled")$Total
+    UM_jacks_new   <-dplyr::filter(counts_new,Category=="Wild Jacks")$Total
+    HOR_jacks_new  <-dplyr::filter(counts_new,Category=="Hatchery Jacks to Hatchery")$Total +
+                     dplyr::filter(counts_new,Category=="Hatchery Jacks Hauled")$Total
+    AP_jacks_new   <-dplyr::filter(counts_new,Category=="Acclimation Pond Jacks Hauled")$Total
+
+    counts[nrow(counts)+1,1:5] <-c(curr_yr,"Adults",UM_adults_new,HOR_adults_new,AP_adults_new)
+    counts[nrow(counts)+1,1:5] <-c(curr_yr,"Jacks",UM_jacks_new,HOR_jacks_new,AP_jacks_new)
+    counts$UM                      <-as.numeric(counts$UM)
+    counts$HOR                     <-as.numeric(counts$HOR)
+    counts$AP                      <-as.numeric(counts$AP)
+
+    ##### FPF Sampling Expansions
+    # Re-write this to filter for first instance of unsampled, doesn't need to be May-July for first block
+
+    exp_months      <-colnames(counts_new)[2:13]
+    UM_adults_temp  <-vector()
+    UM_jacks_temp   <-vector()
+    HOR_adults_temp <-vector()
+    HOR_jacks_temp  <-vector()
+    AP_adults_temp  <-vector()
+    AP_jacks_temp   <-vector()
+
+    for(m in 1:length(exp_months)){
+      UM_adults_temp[m]  <-counts_new[which(counts_new$Category=="Wild Adults"),exp_months[m]] +
+                           counts_new[which(counts_new$Category=="Broodstock Taken to Hatchery"),exp_months[m]]
+      UM_jacks_temp[m]   <-counts_new[which(counts_new$Category=="Wild Jacks"),exp_months[m]]
+      HOR_adults_temp[m] <-counts_new[which(counts_new$Category=="Hatchery Adults to Hatchery"),exp_months[m]] +
+                           counts_new[which(counts_new$Category=="Hatchery Adults Hauled"),exp_months[m]]
+      HOR_jacks_temp[m]  <-counts_new[which(counts_new$Category=="Hatchery Jacks to Hatchery"),exp_months[m]] +
+                           counts_new[which(counts_new$Category=="Hatchery Jacks Hauled"),exp_months[m]]
+      AP_adults_temp[m]  <-counts_new[which(counts_new$Category=="Acclimation Pond Adults to Hatchery"),exp_months[m]] +
+                           counts_new[which(counts_new$Category=="Acclimation Pond Adults Hauled"),exp_months[m]]
+      AP_jacks_temp[m]   <-counts_new[which(counts_new$Category=="Acclimation Pond Jacks to Hatchery"),exp_months[m]] +
+                           counts_new[which(counts_new$Category=="Acclimation Pond Jacks Hauled"),exp_months[m]]
+    }
+
+    unsamp_count_adults <-as.numeric(counts_new[which(counts_new$Category=="Unsampled Chinook Adults"),c(exp_months)])
+    unsamp_count        <-data.frame(Month = exp_months, Count = unsamp_count_adults)
+    unsamp_non_zeros    <-which(unsamp_count$Count!=0)
+    first_non0_month    <-unsamp_count[unsamp_non_zeros[1],"Month"]
+    last_non0_month    <-unsamp_count[unsamp_non_zeros[length(unsamp_non_zeros)],"Month"]
+
+    # Fall fish
+    fall_AD_MMD[,4]            <-month(as.POSIXlt(fall_AD_MMD$Date, format="%m/%d/%Y"))
+    colnames(fall_AD_MMD)[4]   <-"Month"
+    fall_AD_MMD_sums           <-aggregate(x=list(fall_AD_MMD$Ad.Clip.Adults,fall_AD_MMD$Ad.Clip.Jacks),
+                                           by=list(fall_AD_MMD$Month), FUN=sum)
+    colnames(fall_AD_MMD_sums) <-c("Month","Count_Adults","Count_Jacks")
+
+    ##### Put df together to calculate extrapolated unsampled fish
+    # This used to not be automated so pay attention to how this is made!
+    fall_AD_MMD_months <-unique(fall_AD_MMD_sums$Month)
+
+    unsamp_extr <-data.frame(
+      Group      = c(rep("Adults",length(exp_months)),rep("Jacks",length(exp_months))),
+      Month      = rep(exp_months,2),
+      UM_Count   = c(UM_adults_temp,UM_jacks_temp),
+      HOR_Count  = c(HOR_adults_temp,HOR_jacks_temp),
+      AP_Count   = c(AP_adults_temp,AP_jacks_temp),
+      Fall_Count = c(rep(0,(min(fall_AD_MMD_sums$Month)-1)),
+                   dplyr::filter(fall_AD_MMD_sums,Month==fall_AD_MMD_months[1])$Count_Adults,
+                   ifelse(10 %in% fall_AD_MMD_sums$Month, dplyr::filter(fall_AD_MMD_sums,Month==10)$Count_Adults,0),
+                   ifelse(11 %in% fall_AD_MMD_sums$Month, dplyr::filter(fall_AD_MMD_sums,Month==11)$Count_Adults,0),
+                   ifelse(12 %in% fall_AD_MMD_sums$Month, dplyr::filter(fall_AD_MMD_sums,Month==12)$Count_Adults,0),
+                   rep(0,(min(fall_AD_MMD_sums$Month)-1)),
+                   dplyr::filter(fall_AD_MMD_sums,Month==fall_AD_MMD_months[1])$Count_Jacks,
+                   ifelse(10 %in% fall_AD_MMD_sums$Month, dplyr::filter(fall_AD_MMD_sums,Month==10)$Count_Jacks,0),
+                   ifelse(11 %in% fall_AD_MMD_sums$Month, dplyr::filter(fall_AD_MMD_sums,Month==11)$Count_Jacks,0),
+                   ifelse(12 %in% fall_AD_MMD_sums$Month, dplyr::filter(fall_AD_MMD_sums,Month==12)$Count_Jacks,0))
+    )
+
+    unsamp_extr$Month <-factor(unsamp_extr$Month, levels = exp_months)
+    unsamp_extr       <-unsamp_extr[order(unsamp_extr$Month, unsamp_extr$Group),]
+
+    # Calc stock proportions
+    unsamp_extr[,7]          <-rowSums(unsamp_extr[,3:6])
+    colnames(unsamp_extr)[7] <-"Total_Count"
+    unsamp_extr[,8]          <-unsamp_extr$UM_Count/unsamp_extr$Total_Count
+    unsamp_extr[,9]          <-unsamp_extr$HOR_Count/unsamp_extr$Total_Count
+    unsamp_extr[,10]         <-unsamp_extr$AP_Count/unsamp_extr$Total_Count
+    unsamp_extr[,11]         <-unsamp_extr$Fall_Count/unsamp_extr$Total_Count
+    colnames(unsamp_extr)    <-c("Group","Month","UM_Count","HOR_Count","AP_Count","Fall_Count","Total_Count",
+                                 "UM_Prop","HOR_Prop","AP_Prop","Fall_Prop")
+    unsamp_extr              <-replace(unsamp_extr, is.na(unsamp_extr), 0)
+
+
+    unsamp_adults_temp  <-vector()
+    unsamp_jacks_temp   <-vector()
+
+    for(m in 1:length(exp_months)){
+      unsamp_adults_temp[m] <-counts_new[which(counts_new$Category==paste0("Unsampled ",params$sp," Adults")),exp_months[m]]
+      unsamp_jacks_temp[m]  <-counts_new[which(counts_new$Category==paste0("Unsampled ",params$sp," Jacks")),exp_months[m]]
+    }
+
+    unsamp_df <-data.frame(
+      Group           = c(rep("Adults",length(exp_months)),rep("Jacks",length(exp_months))),
+      Month           = rep(exp_months,2),
+      unsampled_count = c(unsamp_adults_temp,unsamp_jacks_temp)
+    )
+
+    unsamp_df$Month             <-factor(unsamp_df$Month, levels = exp_months)
+    unsamp_df                   <-unsamp_df[order(unsamp_df$Month, unsamp_df$Group),]
+    unsamp_extr_final           <-cbind(unsamp_extr,unsamp_df$unsampled_count)
+    colnames(unsamp_extr_final) <-c("Group","Month","UM_Count","HOR_Count","AP_Count","Fall_Count","Total_Count",
+                                                      "UM_Prop","HOR_Prop","AP_Prop","Fall_Prop","unsampled_count")
+
+    # If there are months with unsampled fish, but no samples taken for stock structure, use last years numbers to expand unsampled fish
+    samp_months <-exp_months[(which(exp_months==first_non0_month)):(which(exp_months==last_non0_month))]
+
+    for(e in 1:length(samp_months)){
+      temp_unsamp <-dplyr::filter(unsamp_extr_final, Month == samp_months[e])
+      if(sum(temp_unsamp$Total_Count)<30){
+
+        unsamp_old   <-read.csv(paste0(drive_white,(curr_yr-1),"_Escapement/",(curr_yr-1),"_Outputs/",(curr_yr-1),"_unsamp_expan.csv"))
+        unsamp_old_e <-dplyr::filter(unsamp_old, Month == samp_months[e])
+
+        unsamp_extr_final[which(unsamp_extr_final$Month==samp_months[e]),
+                          c("UM_Count","HOR_Count","AP_Count","Fall_Count","Total_Count",
+                            "UM_Prop","HOR_Prop","AP_Prop","Fall_Prop")] <-unsamp_old_e[which(unsamp_old_e$Month==samp_months[e]),
+                          c("UM_Count","HOR_Count","AP_Count","Fall_Count","Total_Count",
+                              "UM_Prop","HOR_Prop","AP_Prop","Fall_Prop")]
+      }
+    }
+
+
+    # Extrapolate unsampled via stock proportions and unsampled counts
+    unsamp_extr_final[,ncol(unsamp_extr_final)+1] <-unsamp_extr_final$UM_Prop * unsamp_extr_final$unsampled_count
+    unsamp_extr_final[,ncol(unsamp_extr_final)+1] <-unsamp_extr_final$HOR_Prop * unsamp_extr_final$unsampled_count
+    unsamp_extr_final[,ncol(unsamp_extr_final)+1] <-unsamp_extr_final$AP_Prop * unsamp_extr_final$unsampled_count
+    unsamp_extr_final[,ncol(unsamp_extr_final)+1] <-unsamp_extr_final$Fall_Prop * unsamp_extr_final$unsampled_count
+    colnames(unsamp_extr_final)                   <-c("Group","Month","UM_Count","HOR_Count","AP_Count","Fall_Count","Total_Count",
+                                                      "UM_Prop","HOR_Prop","AP_Prop","Fall_Prop","Unsampled_Count",
+                                                      "UM_Extr","HOR_Extr","AP_Extr","Fall_Extr")
+    unsamp                                        <-aggregate(x=list(unsamp_extr_final$UM_Extr,unsamp_extr_final$HOR_Extr,
+                                                                     unsamp_extr_final$AP_Extr,unsamp_extr_final$Fall_Extr),
+                                                              by=list(unsamp_extr_final$Group), FUN=sum)
+    colnames(unsamp)                              <-c("Group","Total_UM_Extr","Total_HOR_Extr","Total_AP_Extr","Total_Fall_Extr")
+  }
+
+  
+  
+  
+  # Sum stock-specific groups to get totals, add to counts dataset
+  if(curr_yr<2024){counts[(nrow(counts)-1):nrow(counts),6:8] <-unsamp[,2:4]}
+  if(curr_yr>=2024){counts[(nrow(counts)-1):nrow(counts),6:8] <-c(sum(unsamp$W_A_exp),sum(unsamp$W_J_exp),
+                                                                  sum(unsamp$H_A_exp),sum(unsamp$H_J_exp),
+                                                                  sum(unsamp$AP_A_exp),sum(unsamp$AP_J_exp))}
+  counts[(nrow(counts)-1),9:11]             <-rep(0,3)
+  counts[(nrow(counts)),9:11]               <-rep(0,3)
+  counts[(nrow(counts)-1),12]               <-counts[(nrow(counts)-1),"UM"] + 
+                                              counts[(nrow(counts)-1),"UM_Extr"] + 
+                                              counts[(nrow(counts)-1),"UM_WRH"]
+  counts[(nrow(counts)),12]                 <-counts[(nrow(counts)),"UM"] + 
+                                              counts[(nrow(counts)),"UM_Extr"] + 
+                                              counts[(nrow(counts)),"UM_WRH"]
+  counts[(nrow(counts)-1),13]               <-counts[(nrow(counts)-1),"HOR"] + 
+                                              counts[(nrow(counts)-1),"HOR_Extr"] + 
+                                              counts[(nrow(counts)-1),"HOR_WRH"]
+  counts[(nrow(counts)),13]                 <-counts[(nrow(counts)),"HOR"] + 
+                                              counts[(nrow(counts)),"HOR_Extr"] + 
+                                              counts[(nrow(counts)),"HOR_WRH"]
+  counts[(nrow(counts)-1),14]               <-counts[(nrow(counts)-1),"AP"] + 
+                                              counts[(nrow(counts)-1),"AP_Extr"] + 
+                                              counts[(nrow(counts)-1),"AP_WRH"]
+  counts[(nrow(counts)),14]                 <-counts[(nrow(counts)),"AP"] + 
+                                              counts[(nrow(counts)),"AP_Extr"] + 
+                                              counts[(nrow(counts)),"AP_WRH"]
+  
+  # NOR Assignment/Disposition WRH
+  if(curr_yr %in% NOR_ass$return_yr == FALSE){
+    NOR_ass[(nrow(NOR_ass)+1),1] <-curr_yr
+    # NOR_ass[,"spring_NOR_live"] <-NOR_held_WRH = UM_to_WRH * % Spring/Unk
+    NOR_ass[nrow(NOR_ass),"spring_NOR_live"] <-dplyr::filter(misc_dat, Type == "spring_NOR_live")$Value
+    NOR_ass[nrow(NOR_ass),"spring_NOR_mort"] <-dplyr::filter(misc_dat, Type == "spring_NOR_mort")$Value
+    NOR_ass[nrow(NOR_ass),"spring_HOR_CWT"]  <-dplyr::filter(misc_dat, Type == "spring_HOR_CWT")$Value
+    NOR_ass[nrow(NOR_ass),"fall"]            <-dplyr::filter(misc_dat, Type == "fall")$Value
+    NOR_ass[nrow(NOR_ass),"unknown"]         <-dplyr::filter(misc_dat, Type == "unknown")$Value
+    NOR_ass[nrow(NOR_ass),"no_sample"]       <-dplyr::filter(misc_dat, Type == "no sample")$Value
+  }
+  
+  NOR_ass[,8]              <-rowSums(NOR_ass[,2:6])
+  NOR_ass[,9]              <-(NOR_ass$spring_NOR_live + NOR_ass$spring_NOR_mort)/rowSums(NOR_ass[,2:6])
+  colnames(NOR_ass)[8:9]   <-c("total_to_WRH","prop_spring_NOR")
+  NOR_ass[,10]             <-NOR_ass$spring_HOR_CWT/NOR_ass$total_to_WRH
+  NOR_ass[,11]             <-NOR_ass$fall/NOR_ass$total_to_WRH
+  NOR_ass[,12]             <-NOR_ass$unknown/NOR_ass$total_to_WRH
+  colnames(NOR_ass)[10:12] <-c("prop_spring_HOR","prop_fall","prop_unk")
+  NOR_ass[,13]             <-NOR_ass$prop_spring_NOR + NOR_ass$prop_spring_HOR
+  NOR_ass[,14]             <-NOR_ass$prop_fall + NOR_ass$prop_unk
+  colnames(NOR_ass)[13:14] <-c("prop_spring_total","prop_fall_unk")
+  
+  # Add NORs taken to WRH to counts; where do the jack numbers come from?
+  counts[(nrow(counts)-1),"UM_to_WRH"] <-NOR_ass[nrow(NOR_ass),"total_to_WRH"]
+  counts[(nrow(counts)),"UM_to_WRH"]   <-0
+  
+  # Create df to use y-int of prop_spring_total~return_yr for early props
+  lm_dat           <-as.data.frame(NOR_ass$prop_spring_total)
+  lm_dat$return_yr <-seq(1,length(lm_dat[,1]),1)
+  colnames(lm_dat) <-c("prop_spring_total","return_yr")
+  
+  # New yr of data for AP fish held at WRH & HORs passed on purpose (POP)
+  if(curr_yr<2024){
+    counts[(nrow(counts)-1),"HORs_POP"] <-counts_new[which(counts_new$Category=="Hatchery Adults Hauled"),]$Total 
+    counts[(nrow(counts)),"HORs_POP"]   <-counts_new[which(counts_new$Category=="Hatchery Jacks Hauled"),]$Total 
+    
+    counts[(nrow(counts)-1):(nrow(counts)),"AP_held"] <-c(dplyr::filter(misc_dat,Type == "AP_held_adults")$Value,
+                                                          dplyr::filter(misc_dat,Type == "AP_held_jacks")$Value)
+  }
+  if(curr_yr>=2024){
+    HOR_hauled      <-counts_new[,c("Date", "Week", "HOR.hauled","HOR.jack.hauled","HOR.to.hatchery","HOR.jack.to.hatchery")]
+    HOR_hauled_week <-aggregate(.~Week, data=subset(HOR_hauled, select=-c(Date)), FUN=sum)
+    
+    counts[(nrow(counts)-1),"HORs_POP"] <-sum(HOR_hauled_week$HOR.hauled)
+    counts[(nrow(counts)),"HORs_POP"]   <-sum(HOR_hauled_week$HOR.jack.to.hatchery)
+    
+    counts[(nrow(counts)-1):(nrow(counts)),"AP_held"] <-c(sum(counts_new$Acclimation.to.Hatchery), 0)
+  }
+  
+  yrs <-as.numeric(unique(counts$return_yr))
+  
+  for(y in 1:length(yrs)){
+    if(yrs[y]<2004){
+      # NOR calc
+      prop_spr                                                               <-as.numeric(lm(prop_spring_total~return_yr,data=lm_dat)$coefficients[1])
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"NOR_spring_total"] <-prop_spr * counts[which(counts$return_yr==as.numeric(yrs[y])),"UM_Total"]
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"NOR_held"]         <-dplyr::filter(counts,return_yr==yrs[y])$UM_to_WRH*prop_spr
+      # Fall_Unknown NOR calc
+      prop_fall                                                              <-1-as.numeric(lm(prop_spring_total~return_yr,data=lm_dat)$coefficients[1])
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_unk_total"]   <-(prop_fall * counts[which(counts$return_yr==as.numeric(yrs[y])),"UM_Total"])
+      # Fall fish held at WRH
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_held"]        <-dplyr::filter(counts,return_yr==yrs[y])$UM_to_WRH*(1-prop_spr)
+    }
+    if(yrs[y]>=2004){
+      # NOR calc
+      prop_spr                                                               <-dplyr::filter(NOR_ass,return_yr==as.numeric(yrs[y]))$prop_spring_total
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"NOR_spring_total"] <-prop_spr * counts[which(counts$return_yr==as.numeric(yrs[y])),"UM_Total"]
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"NOR_held"]         <-dplyr::filter(counts,return_yr==yrs[y])$UM_to_WRH*
+                                                                              (dplyr::filter(NOR_ass,return_yr==yrs[y])$prop_spring_NOR)
+      # Fall_Unknown NOR calc
+      prop_fall                                                            <-dplyr::filter(NOR_ass,return_yr==as.numeric(yrs[y]))$prop_fall_unk
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_unk_total"] <-(prop_fall * counts[which(counts$return_yr==as.numeric(yrs[y])),"UM_Total"])
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_held"]      <-dplyr::filter(counts,return_yr==yrs[y])$UM_to_WRH*
+                                                                             (1-dplyr::filter(NOR_ass,return_yr==yrs[y])$prop_spring_NOR)
+    }
+    # HOR calc
+    counts[which(counts$return_yr==as.numeric(yrs[y])),"HOR_spring_total"] <-(0 * counts[which(counts$return_yr==as.numeric(yrs[y])),"UM_Total"]) + 
+                                                                              counts[which(counts$return_yr==as.numeric(yrs[y])),"HOR_Total"]
+    # AP calc
+    if(yrs[y]<2007){
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"AP_spring_total"]   <-(0 * counts[which(counts$return_yr==as.numeric(yrs[y])),"UM_Total"]) +
+                                                                                 counts[which(counts$return_yr==as.numeric(yrs[y])),"AP_Total"]}
+    if(yrs[y]>=2007){
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"AP_spring_total"] <-counts[which(counts$return_yr==as.numeric(yrs[y])),"AP_Total"]}
+    ###
+    # HORs_POP = HORs passed on purpose
+    counts[which(counts$return_yr==as.numeric(yrs[y])),"HOR_held"]    <-dplyr::filter(counts,return_yr==yrs[y])$HOR_WRH+
+                                                                       (dplyr::filter(counts,return_yr==yrs[y])$HOR-
+                                                                        dplyr::filter(counts,return_yr==yrs[y])$HORs_POP)
+    counts[which(counts$return_yr==as.numeric(yrs[y])),"AP_held"]     <-dplyr::filter(counts,return_yr==yrs[y])$AP_held
+    counts[which(counts$return_yr==as.numeric(yrs[y])),"NOR_passed"]  <-dplyr::filter(counts,return_yr==yrs[y])$NOR_spring_total -
+                                                                        dplyr::filter(counts,return_yr==yrs[y])$NOR_held
+    counts[which(counts$return_yr==as.numeric(yrs[y])),"HOR_passed"]  <-dplyr::filter(counts,return_yr==yrs[y])$HOR_spring_total -
+                                                                        dplyr::filter(counts,return_yr==yrs[y])$HOR_held
+    counts[which(counts$return_yr==as.numeric(yrs[y])),"AP_passed"]   <-dplyr::filter(counts,return_yr==yrs[y])$AP_spring_total -
+                                                                        dplyr::filter(counts,return_yr==yrs[y])$AP_held
+    if(yrs[y]<=2021){
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_passed"] <-dplyr::filter(counts,return_yr==yrs[y])$fall_unk_total -
+                                                                          dplyr::filter(counts,return_yr==yrs[y])$fall_held
+    }
+    if(yrs[y]==2021){
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_passed"] <-(dplyr::filter(counts,return_yr==yrs[y])$fall_unk_total -
+                                                                           dplyr::filter(counts,return_yr==yrs[y])$fall_held) +
+                                                                           c(557, 260)
+    }
+    if(yrs[y]==2022){
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_passed"] <-(dplyr::filter(counts,return_yr==yrs[y])$fall_unk_total -
+                                                                           dplyr::filter(counts,return_yr==yrs[y])$fall_held) +
+                                                                           c(303, 0)
+    }
+    if(yrs[y]==2023){
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_passed"] <-(dplyr::filter(counts,return_yr==yrs[y])$fall_unk_total -
+                                                                           dplyr::filter(counts,return_yr==yrs[y])$fall_held) +
+                                                                           c(369, 9)
+    }
+    if(yrs[y]>=2024){
+      counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_passed"] <-(dplyr::filter(counts,return_yr==yrs[y])$fall_unk_total -
+                                                                           dplyr::filter(counts,return_yr==yrs[y])$fall_held) +
+                                                                           c(sum(counts_new$Ad.Clipped), 0)
+    }
+  }
+  counts$total_passed <-rowSums(counts[c("NOR_passed","HOR_passed","AP_passed")])
+  white_esc           <-dplyr::filter(counts,return_yr==curr_yr & Stage=="Adults")$fall_passed
+  
+  # Write files for next escapement year
+  if(curr_yr<2024){write.csv(unsamp_extr_final,paste0(drive_white_esc,curr_yr,"_Outputs","/",curr_yr,"_unsamp_expan.csv"),row.names=FALSE)}
+  if(curr_yr>=2024){write.csv(unsamp,paste0(drive_white_esc,curr_yr,"_Outputs","/",curr_yr,"_unsamp_expan.csv"),row.names=FALSE)}
+  write.csv(counts[,1:17],paste0(drive_white_esc_next,"/counts.csv"),row.names=FALSE)
+  write.csv(counts,paste0(drive_white_fore,"/counts.csv"),row.names=FALSE)
+  write.csv(counts,paste0(drive_white_fore_next,"/counts.csv"),row.names=FALSE)
+  write.csv(NOR_ass[,1:7],paste0(drive_white_esc_next,"/WRH_DNA_StockStructure.csv"),row.names=FALSE)
+  write.csv(NOR_ass[,1:6],paste0(drive_white_fore_next,"/WRH_DNA_StockStructure.csv"),row.names=FALSE)
+  
+  ggplot() + 
+    geom_line(data = counts, aes(x = return_yr, y = total_passed, group = Stage, color=Stage), linewidth = 1) +
+    xlab('Return Year') +
+    ylab('Total Fish Passed') +
+    theme_classic() +
+    scale_colour_economist()+
+    theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+  
+  NOR_ass[,c("return_yr","prop_spring_NOR","prop_spring_HOR","prop_fall","prop_unk","prop_spring_total","prop_fall_unk")] %>%
+    kbl(caption="Table 3. Stock composition based on adipose fin mark status (?) and coded wire tag interceptions at Mud Mountain Dam on the White River.", 
+        digits = 3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+  
+  
+  mmd_counts_long <-tidyr::gather(counts[,c("return_yr","Stage","UM_Total","HOR_Total","AP_Total")], Stock, Escapement, "UM_Total","HOR_Total","AP_Total")
+  
+  ggplot() + 
+    geom_line(data = mmd_counts_long, aes(x = return_yr, y = Escapement, group = Stock, color=Stock), linewidth = 1) +
+    xlab('Return Year') +
+    # ylab('Total UM Fish') +
+    facet_wrap(.~Stage,ncol=1,scales="free")+
+    theme_classic() +
+    scale_colour_economist()+
+    theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+  
+  UM_counts   <-counts[,c("return_yr","Stage","UM","UM_Extr","UM_WRH","UM_Total","UM_to_WRH","NOR_spring_total","NOR_held","NOR_passed")]
+  HOR_counts  <-counts[,c("return_yr","Stage","HOR","HOR_Extr","HOR_WRH","HOR_Total","HORs_POP","HOR_spring_total","HOR_held","HOR_passed")]
+  AP_counts   <-counts[,c("return_yr","Stage","AP","AP_Extr","AP_WRH","AP_Total","AP_held","AP_spring_total","AP_passed")]
+  fall_counts <-counts[,c("return_yr","Stage","fall_unk_total","fall_held","fall_passed")]
+  
+  UM_counts[(nrow(UM_counts)-9):nrow(UM_counts),] %>%
+    kbl(caption="Table 4. Unmarked fish counts (i.e., adipose fin present).", digits = 1, row.names = FALSE) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+  
+  HOR_counts[(nrow(HOR_counts)-9):nrow(HOR_counts),] %>%
+    kbl(caption="Table 5. Hatchery-origin fish counts (i.e., adipose fin clipped).", digits = 1, row.names = FALSE) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+  
+  AP_counts[(nrow(AP_counts)-9):nrow(AP_counts),] %>%
+    kbl(caption="Table 6. Acclimation pond fish counts.", digits = 1, row.names = FALSE) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+}
+
+```
+<br>
+<br>
+
+# **Mark-rate estimates**
+
+---
+
+* Mark-type data are collected from carcass sampling, whereby the presence (UM) or absence (AD) of an adipose fin denotes natural- or hatchery-origin, respectively. 
+* In addition, carcasses are scanned for a coded wire tag to confirm hatchery-origin (beep or no beep; B or NB). 
+* Mark-rate is then calculated for each river system as the proportion of ad-clipped and/or tagged individuals (i.e., UMB, ADB, ADNB, UnkB) to unmarked individuals with no tag (i.e., UMNB).
+* When the number of carcasses sampled in a river system is too low (n < 10; exact threshold needs to be determined), the basin-wide mark-rate must be used for that system.
+
+
+```{r mark_rate, fig.cap=c("**Figure 2.** Percentage of hatchery-origin-spawners (pHOS) over time for tributaries within the system.","**Figure 3.** ETRS calculated for each tributary in the system."), fig.topcaption = TRUE, warning=FALSE}
+
+# Fennel, Canyon Falls, Coal Mine, Spiketon, Fiske
+# SPC, Boise, Canyon Creek, Clear, Fox, Kapowsin, Ohop1, Rody, Salmon, Wilkeson
+
+##### Add new esc estimates to historical table
+# Chinook have system-specific escapements for NOR and HOR
+# Coho have basin-wide escapements for NOR and HOR
+esc_ts       <-read.csv(paste0(drive_sp, params$system, "/", curr_yr, "_Escapement/", "esc_ts_stock.csv"), check.names=FALSE)
+# esc_ts       <-read.csv(paste0(drive_sp,curr_yr-1,"_Puyallup Basin_",params$sp," Escapement Estimates.csv"),check.names=FALSE)
+esc_ts_total <-dplyr::filter(esc_ts, Stock=="Total")
+esc_ts_NOR   <-dplyr::filter(esc_ts, Stock=="NOR")
+esc_ts_HOR   <-dplyr::filter(esc_ts, Stock=="HOR")
+esc_ts_total[nrow(esc_ts_total)+1,] <-as.numeric(NA)
+
+# Join WDFW & tribal carcass data 
+dead_fish_fall <-dplyr::filter(dead_fish_d11, survey_date > start_date & survey_date < end_date)
+
+##### [mark_rate] Calculate new year of mark_rate data from carcass sampling data
+# Read in historical pHOS & new yr of mark-status data to separate total escapement into NOR & HOR
+pHOS_ts <-read.csv(paste0(drive_sp,curr_yr-1,"_",params$system,"_",params$sp," pHOS.csv"),check.names=FALSE)
+
+if(params$sp=="Chinook"){
+  system.names.auc        <-c("Clear Creek","Salmon Creek","Boise Creek","Fennel Creek","Canyon Falls","South Prairie Creek",
+                                "Wilkeson Creek","Kapowsin Creek") 
+  system.names.all        <-c("Clear Creek","Salmon Creek","Boise Creek","Fennel Creek","Canyon Falls","South Prairie Creek",
+                                "Wilkeson Creek","Kapowsin Creek", "Carbon River", "Puyallup River", "White River")
+  
+  # Add AUC calcs adjusted for fish days
+  new_esc      <-row_to_names(as.data.frame(t(new_AUC[,c("system.name","AUC_adj")])),row_number = 1)
+  # new_esc_keep <-dplyr::mutate(.data=new_esc, "Salmon Creek" = as.numeric(new_esc$"Salmon Creek") + as.numeric(new_esc$"Salmon Trib"))
+  new_esc_keep <-new_esc[,system.names.auc]
+  # esc_ts[nrow(esc_ts),c("Year",colnames(new_esc_keep),"Stock")] <-c(curr_yr,(as.numeric(new_esc_keep["AUC_adj",])/fish_days),"Total")
+  esc_ts_total[nrow(esc_ts_total),c("Year",colnames(new_esc_keep),"Stock")] <-c(curr_yr,(as.numeric(new_esc_keep["AUC_adj",])),"Total")
+  
+  # Add Carbon, Puyallup, and White esc  
+  esc_ts_total[nrow(esc_ts_total),"Carbon River"]   <-carbon_esc                     
+  esc_ts_total[nrow(esc_ts_total),"Puyallup River"] <-puyallup_esc                     
+  esc_ts_total[nrow(esc_ts_total),"White River"]    <-white_esc                     
+  esc_ts_total[,system.names.all]                   <-mutate_at(esc_ts_total[,system.names.all],system.names.all, as.numeric)
+  
+  ##### Determine mark type for sampled fish
+  ### Marked status  == any individuals w/ adipose clips or CWTs
+  ### Unknown status == fish w/ no tail or head, undetermined adipose or CWT status (not included)
+  # Mark types included
+  mark_filt <-c("STREAM.NAME","WRIA","CARCASSES.SAMPLED",
+                "CWT.ADIPOSE.PRESENT_Male",
+                "CWT.ADIPOSE.PRESENT_Female",
+                "CWT.NO.ADIPOSE_Male",
+                "CWT.NO.ADIPOSE_Female",
+                "CWT..NO.TAIL_Male",
+                "CWT.NO.TAIL_Female",
+                "NO.ADIPOSE.NO.CWT_Male",
+                "NO.ADIPOSE.NO.CWT_Female",
+                "NO.AD.PRESENT.NO.HEAD_Male",
+                "NO.AD.PRESENT.NO.HEAD_Female")
+  mark_types <-mark_filt[-c(1,2)]
+  
+  # Mark types not included (Unknown status)
+  unmark_filt <-c("UNMARKED_Male","UNMARKED_Female")
+  
+  # Tribal survey data are used (WDFW only had 2 AD & 1 UM, rest UNK)
+  survey_counts_tribe[is.na(survey_counts_tribe)] <-0
+  total_sampled_df                                <-survey_counts_tribe[,c(mark_filt,unmark_filt)]
+  all_status                                      <-c(mark_filt[-c(1,2,3)],unmark_filt)
+  
+  samp_sum <-total_sampled_df %>%
+        group_by(WRIA) %>%
+        summarise_at(vars(all_status),list(sum))
+  
+  tribe_mark_status                           <-survey_counts_tribe[,mark_filt]
+  tribe_mark_status[is.na(tribe_mark_status)] <-0
+  
+  x<-tribe_mark_status %>%
+        group_by(WRIA) %>%
+        summarise_at(vars(mark_types),list(sum))
+  
+  tribe_marks <-data.frame(WRIA        = x$WRIA,
+                          carc_sampled = x$CARCASSES.SAMPLED,
+                          marked_fish  = rowSums(x[,mark_types[-1]]),
+                          calc_sampled = rowSums(samp_sum[,-1]))
+  tribe_marks$system.name         <-as.factor(tribe_marks$WRIA)
+  levels(tribe_marks$system.name) <-included
+  tribe_marks_keep                <-dplyr::filter(tribe_marks, system.name %in% names(included))
+  
+  if(curr_yr < 2023){
+    dead_fish_wria<-read.csv(paste0(drive_puy_esc,curr_yr,"_Data/",curr_yr,"_Puyallup River_",params$sp,"_WDFW_SurveyCounts.csv"))
+    spc_mark_status <-dplyr::filter(dead_fish_wria, streamcatalogcode == "10.0429")
+    unmark_filt<-c("noadiposeclip_nocwtbeep") 
+    mark_filt  <-c("adiposeclip_cwtbeep", 
+                   "adiposeclip_nocwtbeep", 
+                   "noadiposeclip_cwtbeep", 
+                   "adiposeclip_nohead")
+    spc_mark_status[is.na(spc_mark_status)] <-0
+    spc_UM <-sum(spc_mark_status[,unmark_filt])
+    spc_AD <-sum(spc_mark_status[,mark_filt])
+  }
+  if(curr_yr >= 2023){
+    spc_mark_status        <-dplyr::filter(dead_fish_wria, stream_catalog_code == "10.0429")
+    spc_mark_status_adults <-dplyr::filter(spc_mark_status, maturity == "Adult")
+    spc_AD                 <-dplyr::filter(spc_mark_status_adults, fin_clip == "AD")
+    spc_UM                 <-dplyr::filter(spc_mark_status_adults, fin_clip == "UM")
+    spc_AD_sum             <-sum(spc_AD$fish_count)
+    spc_UM_sum             <-sum(spc_UM$fish_count)
+    spc_UM_NB              <-sum(dplyr::filter(spc_UM, cwt_detection == "No Beep")$fish_count)
+    spc_UM_NW              <-sum(dplyr::filter(spc_UM, cwt_detection == "Not Wanded")$fish_count)
+    spc_UM_B               <-sum(dplyr::filter(spc_UM, cwt_detection == "Beep")$fish_count)
+    UM_marks               <-c("Beep", "Not Wanded")
+    spc_AD_true_df         <-rbind(spc_AD,dplyr::filter(spc_UM, UM_marks == cwt_detection))
+  }
+  
+  spc_total              <-spc_AD_sum + spc_UM_sum
+  mark_stat              <-rbind(tribe_marks_keep,c("10.0429",spc_total,spc_AD_sum,spc_total,"South Prairie Creek"))
+  colnames(mark_stat)    <-c("WRIA","Carc_Sampled","Marked","Calc_Sampled","System")
+  mark_stat              <-mark_stat[,c("System","Calc_Sampled","Marked")]
+  mark_stat$Calc_Sampled <-as.numeric(mark_stat$Calc_Sampled)
+  mark_stat$Marked       <-as.numeric(mark_stat$Marked)
+  mark_stat$System       <-as.character(mark_stat$System)
+  
+  ##### Comparison btw my marked/sampled numbers vs. Gabe's
+  # SPC is off (Gabe's much higher for both)
+  # Canyon Falls need to use data from other years
+  
+  # mark_stat <-read.csv(paste0(drive_sp,curr_yr-1,"_Puyallup Basin_",params$sp," MarkRate.csv"),check.names=FALSE)
+  
+  # Puyallup M_rate is calc'd using Fennel, Canyon Falls, and Kapowsin sum
+  mark_stat[(nrow(mark_stat)+1),] <-c("Puyallup River",
+                                      sum(dplyr::filter(mark_stat, System %in%  c("Fennel Creek","Canyon Falls","Kapowsin Creek"))$Calc_Sampled),
+                                      sum(dplyr::filter(mark_stat, System %in%  c("Fennel Creek","Canyon Falls","Kapowsin Creek"))$Marked))
+  # Carbon uses SPC M_rate
+  mark_stat[(nrow(mark_stat)+1),] <-c("Carbon River",
+                                      dplyr::filter(mark_stat, System %in%  c("South Prairie Creek"))$Calc_Sampled,
+                                      dplyr::filter(mark_stat, System %in%  c("South Prairie Creek"))$Marked)
+  # White River calc'd separately
+  mark_stat[(nrow(mark_stat)+1),] <-c("White River",
+                                      white_esc,
+                                      (dplyr::filter(unsamp, Group == "Adults")$Total_Fall_Extr + sum(fall_AD_MMD_sums$Count_Adults)))
+  
+  mark_stat$Calc_Sampled <-as.numeric(mark_stat$Calc_Sampled)
+  mark_stat$Marked       <-as.numeric(mark_stat$Marked)
+  mark_stat$M_rate       <-mark_stat$Marked/mark_stat$Calc_Sampled  # Calc M_rate = Marked/Sampled
+  mark_stat              <-dplyr::filter(mark_stat, System != "Salmon Trib")
+  
+  if(any(mark_stat$M_rate=="NaN")){
+    nans      <-dplyr::filter(mark_stat, M_rate == "NaN")$System
+    for(n in 1:length(nans)){
+      recent_Mrate                                       <-pHOS_ts[c((nrow(pHOS_ts)-4):(nrow(pHOS_ts))),nans[n]]
+      avg_Mrate                                          <-mean(recent_Mrate, na.rm=TRUE)
+      mark_stat[which(mark_stat$M_rate=="NaN"),"M_rate"] <-avg_Mrate
+    }
+  }
+}
+
+if(params$sp=="Coho"){
+  if(params$system=="Puyallup River"){
+    
+    survey_counts_tribe_deads <-survey_counts_tribe[,c("STREAM",
+                                                    "StreamCatalogCode",
+                                                    "Date..mm.dd.yyyy.",
+                                                    "DEAD",
+                                                    "CWT.ADIPOSE.PRESENT_Male",
+                                                    "CWT.ADIPOSE.PRESENT_Female",
+                                                    "CWT.NO.ADIPOSE_Male",
+                                                    "CWT.NO.ADIPOSE_Female",
+                                                    "CWT.NO.TAIL_Male",
+                                                    "CWT.NO.TAIL_Female",
+                                                    "NO.ADIPOSE.NO.CWT_Male",
+                                                    "NO.ADIPOSE.NO.CWT_Female",
+                                                    "NO.AD.PRESENT.NO.HEAD_Male",
+                                                    "NO.AD.PRESENT.NO.HEAD_Female",
+                                                    "UNMARKED_Male",
+                                                    "UNMARKED_Female",
+                                                    "Date_yyyymmdd")]
+
+      mark_filt <-c("STREAM",
+                    "StreamCatalogCode",
+                    "Date..mm.dd.yyyy.",
+                    "DEAD",
+                    "CWT.ADIPOSE.PRESENT_Male",
+                    "CWT.ADIPOSE.PRESENT_Female",
+                    "CWT.NO.ADIPOSE_Male",
+                    "CWT.NO.ADIPOSE_Female",
+                    "CWT.NO.TAIL_Male",
+                    "CWT.NO.TAIL_Female",
+                    "NO.ADIPOSE.NO.CWT_Male",
+                    "NO.ADIPOSE.NO.CWT_Female",
+                    "NO.AD.PRESENT.NO.HEAD_Male",
+                    "NO.AD.PRESENT.NO.HEAD_Female")
+      mark_types <-mark_filt[-c(1,2,3)]
+      
+      # Mark types not included (Unknown status)
+      unmark_filt <-c("UNMARKED_Male","UNMARKED_Female")
+      
+      # Tribal survey data are used (WDFW only had 2 AD & 1 UM, rest UNK)
+      survey_counts_tribe_deads[is.na(survey_counts_tribe_deads)] <-0
+      total_sampled_df                                <-survey_counts_tribe_deads[,c(mark_filt,unmark_filt)]
+      all_status                                      <-c(mark_filt[-c(1,2,3)],unmark_filt)
+      
+      samp_sum <-total_sampled_df %>%
+            group_by(StreamCatalogCode) %>%
+            summarise_at(vars(all_status),list(sum))
+      
+      tribe_mark_status                           <-survey_counts_tribe_deads[,mark_filt]
+      tribe_mark_status[is.na(tribe_mark_status)] <-0
+      
+      x<-tribe_mark_status %>%
+            group_by(StreamCatalogCode) %>%
+            summarise_at(vars(mark_types),list(sum))
+      
+      tribe_marks <-data.frame(StreamCatalogCode = x$StreamCatalogCode,
+                              carc_sampled       = x$DEAD,
+                              marked_fish        = rowSums(x[,mark_types[-1]]),
+                              calc_sampled       = rowSums(samp_sum[,c(3:ncol(samp_sum))]))
+      tribe_marks$system.name         <-as.factor(tribe_marks$StreamCatalogCode)
+      
+      ##### Moved from system-specific mark-rates (below lines) to basin-wide mark-rates
+      # levels(tribe_marks$system.name) <-included
+      # tribe_marks_keep                <-dplyr::filter(tribe_marks, system.name %in% names(included))
+      
+      ##### Basin-wide mark-rates
+      levels(tribe_marks$system.name) <-included_deads
+
+      mark_stat              <-rbind(tribe_marks)
+      colnames(mark_stat)    <-c("StreamCatalogCode","Carc_Sampled","Marked","Calc_Sampled","System")
+      mark_stat$Calc_Sampled <-as.numeric(mark_stat$Calc_Sampled)
+      mark_stat$Marked       <-as.numeric(mark_stat$Marked)
+      mark_stat$System       <-as.character(mark_stat$System)
+      mark_stat$M_rate       <-mark_stat$Marked/mark_stat$Carc_Sampled
+  }
+  
+  if(params$system=="East Kitsap"){
+    A10   <-dplyr::filter(survey_counts_tribe, StreamCatalogCode %in% c("15.0185", "15.0189", "15.0188"))
+    bjack <-dplyr::filter(survey_counts_tribe, StreamCatalogCode %in% c("15.0203", "15.0206"))
+    chico <-dplyr::filter(survey_counts_tribe, StreamCatalogCode %in% c("15.0229", "15.0229A", "15.0234"))
+    
+    A10_sampled   <-sum(A10$MarkNB_Count, A10$MarkB_Count, A10$MarkNH_Count, A10$UMNB_Count, A10$UMB_Count, A10$UknB_Count)
+    A10_marked    <-sum(A10$MarkNB_Count) + sum(A10$MarkB_Count) + sum(A10$MarkNH_Count) + sum(A10$UMB_Count)
+    bjack_sampled <-sum(bjack$MarkNB_Count, bjack$MarkB_Count, bjack$MarkNH_Count, bjack$UMNB_Count, bjack$UMB_Count, bjack$UknB_Count)
+    bjack_marked  <-sum(bjack$MarkNB_Count) + sum(bjack$MarkB_Count) + sum(bjack$MarkNH_Count) + sum(bjack$UMB_Count)
+    chico_sampled <-sum(chico$MarkNB_Count, chico$MarkB_Count, chico$MarkNH_Count, chico$UMNB_Count, chico$UMB_Count, chico$UknB_Count)
+    chico_marked  <-sum(chico$MarkNB_Count) + sum(chico$MarkB_Count) + sum(chico$MarkNH_Count) + sum(chico$UMB_Count)
+    total_sampled <-A10_sampled + bjack_sampled + chico_sampled
+    total_marked  <-A10_marked + bjack_marked + chico_marked
+    
+    ek_sampled <-c(A10_sampled,bjack_sampled,chico_sampled,total_sampled)
+    ek_marked  <-c(A10_marked,bjack_marked,chico_marked,total_marked)
+    ek_syst_name    <-c("Area 10","Blackjack Creek","Chico Creek","Basin-wide")
+    
+    mark_stat <-data.frame(System       = ek_syst_name,
+                           Calc_Sampled = ek_sampled,
+                           Marked       = ek_marked,
+                           M_rate       = ek_marked/ek_sampled)
+  }
+  
+  if(params$system=="South Sound"){
+    WRIA_13_UM  <-dplyr::filter(dead_fish_fall, stream_catalog_code=="13.0006" & fin_clip == "UM")
+    WRIA_13_AD  <-dplyr::filter(dead_fish_fall, stream_catalog_code=="13.0006" & fin_clip == "AD")
+    WRIA_13_UNK <-dplyr::filter(dead_fish_fall, stream_catalog_code=="13.0006" & fin_clip == "UNK")
+    WRIA_13_UMNB_df <-dplyr::filter(WRIA_13_UM, cwt_detection=="No Beep")
+    WRIA_13_ADNB_df <-dplyr::filter(WRIA_13_AD, cwt_detection=="No Beep")
+    WRIA_13_UMB_df  <-dplyr::filter(WRIA_13_UM, cwt_detection=="Beep")
+    WRIA_13_ADB_df  <-dplyr::filter(WRIA_13_AD, cwt_detection=="Beep")
+    WRIA_13_UNKB_df <-dplyr::filter(WRIA_13_UNK, cwt_detection=="Beep")
+
+    
+    WRIA_14_UM  <-dplyr::filter(dead_fish_fall, stream_catalog_code %in% c("14.0001", "14.0020", "14.0024A", "14.0032", 
+                                                                            "14.0035", "14.0051", "14.0094") & fin_clip == "UM")
+    WRIA_14_AD  <-dplyr::filter(dead_fish_fall, stream_catalog_code %in% c("14.0001", "14.0020", "14.0024A", "14.0032", 
+                                                                            "14.0035", "14.0051", "14.0094") & fin_clip == "AD")
+    WRIA_14_UNK <-dplyr::filter(dead_fish_fall, stream_catalog_code %in% c("14.0001", "14.0020", "14.0024A", "14.0032", 
+                                                                            "14.0035", "14.0051", "14.0094") & fin_clip == "UNK")
+    WRIA_14_UMNB_df <-dplyr::filter(WRIA_14_UM, cwt_detection=="No Beep")
+    WRIA_14_ADNB_df <-dplyr::filter(WRIA_14_AD, cwt_detection=="No Beep")
+    WRIA_14_UMB_df  <-dplyr::filter(WRIA_14_UM, cwt_detection=="Beep")
+    WRIA_14_ADB_df  <-dplyr::filter(WRIA_14_AD, cwt_detection=="Beep")
+    WRIA_14_UNKB_df <-dplyr::filter(WRIA_14_UNK, cwt_detection=="Beep")
+
+    WRIA_15_UM  <-dplyr::filter(dead_fish_fall, stream_catalog_code %in% c("15.0002", "15.0015") & fin_clip == "UM")
+    WRIA_15_AD  <-dplyr::filter(dead_fish_fall, stream_catalog_code %in% c("15.0002", "15.0015") & fin_clip == "AD")
+    WRIA_15_UNK <-dplyr::filter(dead_fish_fall, stream_catalog_code %in% c("15.0002", "15.0015") & fin_clip == "UNK")
+    WRIA_15_UMNB_df <-dplyr::filter(WRIA_15_UM, cwt_detection=="No Beep")
+    WRIA_15_ADNB_df <-dplyr::filter(WRIA_15_AD, cwt_detection=="No Beep")
+    WRIA_15_UMB_df  <-dplyr::filter(WRIA_15_UM, cwt_detection=="Beep")
+    WRIA_15_ADB_df  <-dplyr::filter(WRIA_15_AD, cwt_detection=="Beep")
+    WRIA_15_UNKB_df <-dplyr::filter(WRIA_15_UNK, cwt_detection=="Beep")
+    
+    WRIA_13_nsamp <-sum(WRIA_13_UM$fish_count) + sum(WRIA_13_AD$fish_count) + sum(WRIA_13_UNK$fish_count)
+    WRIA_14_nsamp <-sum(WRIA_14_UM$fish_count) + sum(WRIA_14_AD$fish_count) + sum(WRIA_14_UNK$fish_count)
+    WRIA_15_nsamp <-sum(WRIA_15_UM$fish_count) + sum(WRIA_15_AD$fish_count) + sum(WRIA_15_UNK$fish_count)
+
+    WRIA_13_mark_df <-rbind(WRIA_13_ADNB_df,WRIA_13_UMB_df,WRIA_13_ADB_df,WRIA_13_UNKB_df)
+    WRIA_13_nmark   <-sum(WRIA_13_mark_df$fish_count)
+    WRIA_14_mark_df <-rbind(WRIA_14_ADNB_df,WRIA_14_UMB_df,WRIA_14_ADB_df,WRIA_14_UNKB_df)
+    WRIA_14_nmark   <-sum(WRIA_14_mark_df$fish_count)
+    WRIA_15_mark_df <-rbind(WRIA_15_ADNB_df,WRIA_15_UMB_df,WRIA_15_ADB_df,WRIA_15_UNKB_df)
+    WRIA_15_nmark   <-sum(WRIA_15_mark_df$fish_count) 
+    
+    mark_stat <-data.frame(System       = c("WRIA_13", "WRIA_14", "WRIA_15"),
+                           Calc_Sampled = c(WRIA_13_nsamp, WRIA_14_nsamp, WRIA_15_nsamp),
+                           Marked       = c(WRIA_13_nmark, WRIA_14_nmark, WRIA_15_nmark),
+                           M_rate       = c(WRIA_13_nmark, WRIA_14_nmark, WRIA_15_nmark)/c(WRIA_13_nsamp, WRIA_14_nsamp, WRIA_15_nsamp))
+  }
+}
+
+mark_stat$M_rate <-as.numeric(mark_stat$M_rate)
+if(params$system!="East Kitsap"){mark_stat <-mark_stat[order(mark_stat$System),]}
+
+# Print system-specific mark-rate table
+mark_stat[!is.na(mark_stat$System),] %>%
+  kbl(row.names = F, caption = "Table 3. Mark-rate for tributaries in the basin.", digits = 3) %>%
+  kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+
+
+##### [pHOS] Add new year of pHOS to pHOS table w/ switch for system-specific or basin-wide mark-rates
+pHOS_ts[nrow(pHOS_ts)+1,] <-as.numeric(NA)
+if(params$system=="East Kitsap"){
+  ifelse(dplyr::filter(mark_stat, System == "Area 10")$Calc_Sampled<10,
+         pHOS_ts[nrow(pHOS_ts),c("Year","Area 10")] <-c(curr_yr,mark_stat[which(mark_stat$System=="Basin-wide"),4]),
+         pHOS_ts[nrow(pHOS_ts),c("Year","Area 10")] <-c(curr_yr,mark_stat[which(mark_stat$System=="Area 10"),4])
+  )
+  ifelse(dplyr::filter(mark_stat, System == "Blackjack Creek")$Calc_Sampled<10,
+         pHOS_ts[nrow(pHOS_ts),c("Year","Blackjack Creek")] <-c(curr_yr,mark_stat[which(mark_stat$System=="Basin-wide"),4]),
+         pHOS_ts[nrow(pHOS_ts),c("Year","Blackjack Creek")] <-c(curr_yr,mark_stat[which(mark_stat$System=="Blackjack Creek"),4])
+  )
+  ifelse(dplyr::filter(mark_stat, System == "Chico Creek")$Calc_Sampled<10,
+         pHOS_ts[nrow(pHOS_ts),c("Year","Chico Creek")] <-c(curr_yr,mark_stat[which(mark_stat$System=="Basin-wide"),4]),
+         pHOS_ts[nrow(pHOS_ts),c("Year","Chico Creek")] <-c(curr_yr,mark_stat[which(mark_stat$System=="Chico Creek"),4])
+  )
+  pHOS_ts[nrow(pHOS_ts),c("Year","Basin-wide")] <-c(curr_yr,mark_stat[which(mark_stat$System=="Basin-wide"),4])
+}
+
+if(params$system!="East Kitsap"){
+  if(params$sp=="Chinook"){
+    pHOS_ts[nrow(pHOS_ts),c("Year",unique(mark_stat$System))]   <-c(curr_yr,dplyr::filter(mark_stat, System!="NA")$M_rate)}
+  if(params$sp=="Coho"& params$system!="South Sound"){
+    pHOS_ts[nrow(pHOS_ts),c("Year","Total")]   <-c(curr_yr,sum(mark_stat$Marked)/sum(mark_stat$Carc_Sampled))}
+}
+
+if(params$system=="South Sound"){
+  pHOS_ts[nrow(pHOS_ts),] <-c(curr_yr, mark_stat$M_rate)  
+}
+
+write.csv(pHOS_ts[,!names(pHOS_ts) %in% c("Salmon Trib")], paste0(drive_sp,curr_yr,"_Puyallup Basin_",params$sp," pHOS.csv"), row.names=FALSE)
+
+# Make wide df long; coho uses basin-wide mark data so need a 'Total' column
+if(params$sp=="Chinook"){pHOS_ts_long <-tidyr::gather(pHOS_ts, System, pHOS, system.names.all)}
+if(params$sp=="Coho"){   
+  if(params$system=="Puyallup River"){pHOS_ts_long <-tidyr::gather(pHOS_ts, System, pHOS, names(included))}
+  if(params$system=="East Kitsap"){   pHOS_ts_long <-tidyr::gather(pHOS_ts, System, pHOS, ek_syst_name)}
+  if(params$system=="South Sound"){   pHOS_ts_long <-tidyr::gather(pHOS_ts, System, pHOS, c("WRIA_13","WRIA_14","WRIA_15"))}
+}
+
+# Plot system-specific pHOS data
+ggplot() +
+  geom_line(data = pHOS_ts_long, aes(x = Year, y = pHOS, group = System, color=System), linewidth = 1) +
+  xlab('Return Year') +
+  ylab('pHOS') +
+  theme_classic() +
+  # scale_colour_economist()+
+  # scale_color_viridis(option="mako", discrete = T) +
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))+
+  facet_wrap(.~System)
+
+# Print system-specific pHOS table
+pHOS_ts[,!names(pHOS_ts) %in% c("Salmon Trib")] %>%
+  kbl(row.names = F, caption = "Table 4. Percentage of hatchery-origin-spawners (pHOS) for tributaries within the system.", digits = 3) %>%
+  kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+
+```
+<br>
+<br>
+
+# **Extreme terminal run size**
+
+---
+
+* Current-year/Base-year AUC proportion is applied to base-year ETRS to estimate current-year ETRS.
+* Mark-rates based on carcass sampling throughout the basin are used to separate total ETRS into stock-specific (NOR and HOR) ETRS.
+  + The mark-rates applied can be system-specific or basin-wide depending on the mark-type sample size.
+* For East Kitsap and South Sound coho, the stock-specific ETRS is also split into sub-basin returns based on previously-determined spawning habitat percentages.
+* The stock-specific and total basin ETRS estimates are reported below for the current return year. 
+
+
+```{r esc_results, fig.cap=c("**Figure 3.** ETRS calculated for each tributary in the system."), fig.topcaption = TRUE, warning=FALSE}
+##### [Escapement] Use pHOS to convert total escapement to stock-specific
+if(params$sp=="Chinook"){
+  pHOS_ts <-pHOS_ts[,c("Year",colnames(esc_ts)[-c(1,13)])]
+  
+  esc_ts_HOR_new       <-pHOS_ts[nrow(pHOS_ts),-1]*esc_ts_total[nrow(esc_ts_total),-c(1,13)]
+  esc_ts_HOR_new$Year  <-curr_yr
+  esc_ts_HOR_new$Stock <-"HOR"
+  esc_ts_HOR_new       <-esc_ts_HOR_new[,colnames(esc_ts)]
+  # esc_ts_HOR_new       <-pHOS_ts[,-1] * dplyr::filter(esc_ts, Year > 2001)[,-c(1,13)]
+  # esc_ts_HOR_new$Year  <-dplyr::filter(esc_ts,Year>2001)$Year
+  # esc_ts_HOR_new$Stock <-rep("HOR",nrow(esc_ts_HOR))
+  
+  esc_ts_NOR_new       <-(1-pHOS_ts[nrow(pHOS_ts),-1])*esc_ts_total[nrow(esc_ts_total),-c(1,13)]
+  esc_ts_NOR_new$Year  <-curr_yr
+  esc_ts_NOR_new$Stock <-"NOR"
+  esc_ts_NOR_new       <-esc_ts_NOR_new[,colnames(esc_ts)]
+  # esc_ts_NOR_new       <-(1-pHOS_ts[,-1])*esc_ts[,-c(1,13)]
+  # esc_ts_NOR_new$Year  <-dplyr::filter(esc_ts,Year>2001)$Year
+  # esc_ts_NOR_new$Stock <-rep("NOR",nrow(esc_ts_HOR))
+  
+  esc_ts_stock_new <-rbind(esc_ts_total,esc_ts_NOR,esc_ts_NOR_new,esc_ts_HOR,esc_ts_HOR_new)
+  esc_ts_stock_new <-esc_ts_stock_new[order(esc_ts_stock_new$Stock, esc_ts_stock_new$Year),] # reorder dataset so dates are in order
+  
+  # Make wide df long
+  esc_ts_long <-tidyr::gather(esc_ts_stock_new, System, Escapement, system.names.all)
+  esc_ts_long$Year <-as.numeric(esc_ts_long$Year)
+}
+
+if(params$sp=="Coho"){
+  if(params$system=="Puyallup River"){
+    fennel_1981    <-133
+    canyon_1981    <-93
+    coal_1981      <-1588
+    spike_1981     <-406
+    fiske_1981     <-374
+    total_esc_1981 <-3800
+    
+    # UMNB <-sum(dplyr::filter(dead_fish_fall_UM, cwt_detection=="No Beep")$fish_count)
+    # ADNB <-sum(dplyr::filter(dead_fish_fall_AD, cwt_detection=="No Beep")$fish_count)
+    # UMB  <-sum(dplyr::filter(dead_fish_fall_UM, cwt_detection=="Beep")$fish_count)
+    # ADB  <-sum(dplyr::filter(dead_fish_fall_AD, cwt_detection=="Beep")$fish_count)
+    # UNKB <-sum(dplyr::filter(dead_fish_fall_UNK, cwt_detection=="Beep")$fish_count)
+    # 
+    # n_mark       <-ADNB + UMB + ADB + UNKB
+    prop_HOR_puy <-pHOS_ts[which(pHOS_ts$Year==curr_yr),"Total"]
+    prop_NOR_puy <-1-prop_HOR_puy
+    
+    ### NOR esc calc
+    # split out total AUC into NOR based on mark rate
+    NOR_AUC       <-sum(live_sums_fig$AUC)*prop_NOR_puy
+    # calc % of base yr AUC = (curr_yr total NOR AUC) / (1981 total NOR AUC)
+    AUC_perc_1981 <-NOR_AUC/sum(fennel_1981,canyon_1981,fiske_1981,coal_1981,spike_1981)
+    # puyallup NOR esc calc'd as % of 1981 base yr NOR esc (puy-only, no MMD_FPF included) using % of base yr NOR AUC calc  
+    NOR_esc_puy   <-AUC_perc_1981*total_esc_1981
+    # white NOR esc is just number of coho returned to MMD (all assumed NOR)
+    NOR_esc_white <-dplyr::filter(Redd_AUC, system.name == "MMD_FPF" & year == curr_yr)$AUC_fishdays
+    # total NOR esc is puyallup AUC-based calc & white returns to MMD 
+    NOR_esc_total <-NOR_esc_puy + NOR_esc_white
+    
+    ### HOR esc calc (puyallup-only; MMD returns assumed NOR)
+    # total NOR+HOR esc = (wild esc) / (NOR mark rate) 
+    esc_puy       <-NOR_esc_puy/prop_NOR_puy
+    # total HOR esc = (total NOR+HOR esc) - (wild esc)
+    HOR_esc_total <-esc_puy - NOR_esc_puy
+    
+    esc_ts_stock_new <-rbind(esc_ts,
+                             c(curr_yr,NOR_esc_total,"NOR"),
+                             c(curr_yr,HOR_esc_total,"HOR"),
+                             c(curr_yr,NOR_esc_total+HOR_esc_total,"Total"))
+    esc_ts_stock_new$Puyallup_Basin <-round(as.numeric(esc_ts_stock_new$Puyallup_Basin))
+    esc_ts_stock_new <-esc_ts_stock_new[order(esc_ts_stock_new$Stock),]
+    
+    esc_ts_long <-esc_ts_stock_new
+    esc_ts_long$System <-rep("Puyallup Basin",nrow(esc_ts_long))
+    colnames(esc_ts_long) <-c("Year", "Escapement", "Stock","System")
+  }
+  if(params$system=="East Kitsap"){
+    Salmonberry	     <-767 # 15.0188	 1.6-2.1	
+    Blackjack1       <-263 # 15.0203	 5.2-5.7	
+    Blackjack2       <-557 # 15.0203	 5.7-6.3	
+    Little_Blackjack <-1049 # 15.0206	 0.4-1.0
+    Chico_Wildcat	   <-2132 # 15.0229	2.6-5.0
+    Lost	           <-1269 # 15.0234	0.0-1.9
+    base_yr_AUC_sum  <-sum(Salmonberry, Blackjack1, Blackjack2, Little_Blackjack, Chico_Wildcat, Lost)
+    base_yr_esc      <-2700
+    
+    A10_NOR      <-dplyr::filter(new_AUC, system.name=="Salmonberry")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`Area 10`)
+    A10_HOR      <-dplyr::filter(new_AUC, system.name=="Salmonberry")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`Area 10`)
+    bjack_NOR    <-dplyr::filter(new_AUC, system.name=="Blackjack")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`Blackjack Creek`)
+    bjack_HOR    <-dplyr::filter(new_AUC, system.name=="Blackjack")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`Blackjack Creek`)
+    lilbjack_NOR <-dplyr::filter(new_AUC, system.name=="Little Blackjack")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`Blackjack Creek`)
+    lilbjack_HOR <-dplyr::filter(new_AUC, system.name=="Little Blackjack")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`Blackjack Creek`)
+    chico_NOR    <-dplyr::filter(new_AUC, system.name=="Wildcat")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`Chico Creek`)
+    chico_HOR    <-dplyr::filter(new_AUC, system.name=="Wildcat")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`Chico Creek`)
+    lost_NOR     <-dplyr::filter(new_AUC, system.name=="Lost")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`Chico Creek`)
+    lost_HOR     <-dplyr::filter(new_AUC, system.name=="Lost")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`Chico Creek`)
+    
+    ek_AUC_NOR <-sum(A10_NOR, bjack_NOR, lilbjack_NOR, chico_NOR, lost_NOR)
+    ek_AUC_HOR <-sum(A10_HOR, bjack_HOR, lilbjack_HOR, chico_HOR, lost_HOR)
+    
+    percent_base_yr_NOR <-ek_AUC_NOR/base_yr_AUC_sum
+    percent_base_yr_HOR <-ek_AUC_HOR/base_yr_AUC_sum
+    
+    esc_NOR <-percent_base_yr_NOR * base_yr_esc
+    esc_HOR <-percent_base_yr_HOR * base_yr_esc
+    
+    A10_perc_hab <-0.22
+    A10E_perc_hab <-0.59
+    A11_perc_hab <-0.02
+    
+    A10_esc_NOR <-esc_NOR*A10_perc_hab
+    A10_esc_HOR <-esc_HOR*A10_perc_hab
+    
+    A10E_esc_NOR <-esc_NOR*A10E_perc_hab
+    A10E_esc_HOR <-esc_HOR*A10E_perc_hab
+    
+    A11_esc_NOR <-esc_NOR*A11_perc_hab
+    A11_esc_HOR <-esc_HOR*A11_perc_hab
+    
+    esc_ts_stock_new <-rbind(esc_ts,
+                             c(curr_yr, A10_esc_NOR, A10E_esc_NOR, A11_esc_NOR, "NOR"),
+                             c(curr_yr, A10_esc_HOR, A10E_esc_HOR, A11_esc_HOR, "HOR"),
+                             c(curr_yr, A10_esc_NOR+A10_esc_HOR, A10E_esc_NOR+A10E_esc_HOR, A11_esc_NOR+A11_esc_HOR, "Total")
+                             )
+    
+    esc_ts_stock_new[,2:4] <-round(as.numeric(unlist(esc_ts_stock_new[,2:4])))
+    esc_ts_stock_new       <-esc_ts_stock_new[order(esc_ts_stock_new$Stock),]
+    
+    # Make wide df long
+    esc_ts_long <-data.frame(Year       = rep(unique(esc_ts_stock_new$Year),9),
+                             Escapement = c(esc_ts_stock_new$Area_10, esc_ts_stock_new$Area_10E, esc_ts_stock_new$Area_11),
+                             System     = c(rep("Area 10E", length(unique(esc_ts_stock_new$Year))*3),
+                                          rep("Area 10", length(unique(esc_ts_stock_new$Year))*3),
+                                          rep("Area 11", length(unique(esc_ts_stock_new$Year))*3)),
+                             Stock = rep(c(rep("HOR", length(unique(esc_ts_stock_new$Year))),
+                                          rep("NOR", length(unique(esc_ts_stock_new$Year))),
+                                          rep("Total", length(unique(esc_ts_stock_new$Year)))),3)
+                             )
+  }
+  if(params$system=="South Sound"){
+    Woodland_Creek_1        <-955
+    Woodland_Creek_2        <-1776
+    Perry_Creek             <-503
+    Skookum_Creek           <-2268
+    Skookum_Trib            <-337
+    Rock_Creek              <-1238
+    South_Fork_Goldsborough <-1123
+    Cranberry_Creek         <-439
+    Sherwood_Creek          <-2057
+    Coulter_Creek           <-1584
+    Rocky_Creek             <-512
+    base_yr_AUC_sum  <-sum(Woodland_Creek_1, Woodland_Creek_2, Perry_Creek, Skookum_Creek, Skookum_Trib, Rock_Creek, 
+                           South_Fork_Goldsborough, Cranberry_Creek, Sherwood_Creek, Coulter_Creek, Rocky_Creek)
+    base_yr_esc      <-9200
+    
+    Woodland_NOR     <-dplyr::filter(new_AUC, system.name=="Woodland Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_13`)
+    Woodland_HOR     <-dplyr::filter(new_AUC, system.name=="Woodland Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_13`)
+    Perry_NOR        <-dplyr::filter(new_AUC, system.name=="Perry Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Perry_HOR        <-dplyr::filter(new_AUC, system.name=="Perry Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Skookum_NOR      <-dplyr::filter(new_AUC, system.name=="Skookum Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Skookum_HOR      <-dplyr::filter(new_AUC, system.name=="Skookum Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Skookum_Trib_NOR <-dplyr::filter(new_AUC, system.name=="Skookum Trib")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Skookum_Trib_HOR <-dplyr::filter(new_AUC, system.name=="Skookum Trib")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Rock_NOR         <-dplyr::filter(new_AUC, system.name=="Rock Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Rock_HOR         <-dplyr::filter(new_AUC, system.name=="Rock Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    SFG_NOR          <-dplyr::filter(new_AUC, system.name=="South Fork Goldsborough")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    SFG_HOR          <-dplyr::filter(new_AUC, system.name=="South Fork Goldsborough")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Cranberry_NOR    <-dplyr::filter(new_AUC, system.name=="Cranberry Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Cranberry_HOR    <-dplyr::filter(new_AUC, system.name=="Cranberry Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Sherwood_NOR     <-dplyr::filter(new_AUC, system.name=="Sherwood Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Sherwood_HOR     <-dplyr::filter(new_AUC, system.name=="Sherwood Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_14`)
+    Coulter_NOR      <-dplyr::filter(new_AUC, system.name=="Coulter Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_15`)
+    Coulter_HOR      <-dplyr::filter(new_AUC, system.name=="Coulter Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_15`)
+    Rocky_NOR        <-dplyr::filter(new_AUC, system.name=="Rocky Creek")$AUC_adj * (1-dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_15`)
+    Rocky_HOR        <-dplyr::filter(new_AUC, system.name=="Rocky Creek")$AUC_adj * (dplyr::filter(pHOS_ts, Year==curr_yr)$`WRIA_15`)
+    
+    SS_AUC_NOR <-sum(Woodland_NOR, Perry_NOR, Skookum_NOR, Skookum_Trib_NOR, Rock_NOR, SFG_NOR, Cranberry_NOR, Sherwood_NOR, Coulter_NOR, Rocky_NOR)
+    SS_AUC_HOR <-sum(Woodland_HOR, Perry_HOR, Skookum_HOR, Skookum_Trib_HOR, Rock_HOR, SFG_HOR, Cranberry_HOR, Sherwood_HOR, Coulter_HOR, Rocky_HOR)
+    
+    percent_base_yr_NOR <-SS_AUC_NOR/base_yr_AUC_sum
+    percent_base_yr_HOR <-SS_AUC_HOR/base_yr_AUC_sum
+    
+    esc_NOR <-percent_base_yr_NOR * base_yr_esc
+    esc_HOR <-percent_base_yr_HOR * base_yr_esc
+    
+    Area_13B_perc_hab    <-0.854
+    Area_13Misc_perc_hab <-0.095
+    Chambers_perc_hab    <-0.051
+
+    Area_13B_esc_NOR <-esc_NOR*Area_13B_perc_hab
+    Area_13B_esc_HOR <-esc_HOR*Area_13B_perc_hab
+    
+    Area_13Misc_esc_NOR <-esc_NOR*Area_13Misc_perc_hab
+    Area_13Misc_esc_HOR <-esc_HOR*Area_13Misc_perc_hab
+    
+    Chambers_esc_NOR <-esc_NOR*Chambers_perc_hab
+    Chambers_esc_HOR <-esc_HOR*Chambers_perc_hab
+    
+    esc_ts_stock_new <-rbind(esc_ts,
+                             c(curr_yr, Area_13B_esc_NOR, Area_13Misc_esc_NOR, Chambers_esc_NOR, "NOR"),
+                             c(curr_yr, Area_13B_esc_HOR, Area_13Misc_esc_HOR, Chambers_esc_HOR, "HOR"),
+                             c(curr_yr, Area_13B_esc_NOR+Area_13B_esc_HOR, 
+                                        Area_13Misc_esc_NOR+Area_13Misc_esc_HOR, 
+                                        Chambers_esc_NOR+Chambers_esc_HOR, "Total")
+                             )
+    
+    esc_ts_stock_new[,2:4] <-round(as.numeric(unlist(esc_ts_stock_new[,2:4])))
+    esc_ts_stock_new       <-esc_ts_stock_new[order(esc_ts_stock_new$Stock),]
+    
+    # Make wide df long
+    esc_ts_long <-data.frame(Year       = rep(unique(esc_ts_stock_new$Year),9),
+                             Escapement = c(esc_ts_stock_new$Area_13_B, esc_ts_stock_new$Area_13_Misc, esc_ts_stock_new$Chambers),
+                             System     = c(rep("Area 13B", length(unique(esc_ts_stock_new$Year))*3),
+                                          rep("Area 13Misc", length(unique(esc_ts_stock_new$Year))*3),
+                                          rep("Chambers", length(unique(esc_ts_stock_new$Year))*3)),
+                             Stock = rep(c(rep("HOR", length(unique(esc_ts_stock_new$Year))),
+                                          rep("NOR", length(unique(esc_ts_stock_new$Year))),
+                                          rep("Total", length(unique(esc_ts_stock_new$Year)))),3)
+                             )
+  }
+}
+
+### Plot escapement ts
+ggplot() +
+  geom_line(data = esc_ts_long, aes(x = as.numeric(Year), y = Escapement, group = Stock, color=Stock), linewidth = 1) +
+  geom_point(data = esc_ts_long, aes(x=as.numeric(Year),y=Escapement,group=Stock,color=Stock))+
+  scale_x_continuous(breaks = seq(min(esc_ts_long$Year), max(esc_ts_long$Year), by = 2)) +
+  xlab('Return Year') +
+  ylab('ETRS') +
+  theme_classic() +
+  # scale_colour_economist()+
+  # scale_color_viridis(option="mako", discrete = T) +
+  {if(params$sp=="Chinook"|params$system=="East Kitsap"|params$system=="South Sound")facet_wrap(.~System,ncol=3,scales="free_y")} +
+  # {if()facet_wrap(.~System,ncol=3,scales="free_y")} +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, vjust=1))
+
+
+### Combine total, NOR, and HOR esc; print table
+# Print table
+esc_ts_stock_new %>%
+  kbl(row.names = F, caption = "Table 5. Total ETRS estimates calculated over time for tributaries within the system.", digits=1) %>%
+  kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+  pack_rows(index = c("HOR"   = nrow(esc_ts_stock_new[which(esc_ts_stock_new$Stock=="HOR"),]),
+                      "NOR"   = nrow(esc_ts_stock_new[which(esc_ts_stock_new$Stock=="NOR"),]),
+                      "Total" = nrow(esc_ts_stock_new[which(esc_ts_stock_new$Stock=="Total"),])))
+
+if(params$system=="Puyallup River"){write.csv(esc_ts_stock_new, paste0(drive_puy,curr_yr+1,"_Forecast/esc_ts_stock.csv"),row.names = FALSE)}
+if(params$system=="East Kitsap"){write.csv(esc_ts_stock_new, paste0(drive_EK,curr_yr+1,"_Forecast/esc_ts_stock.csv"),row.names = FALSE)}
+if(params$system=="South Sound"){write.csv(esc_ts_stock_new, paste0(drive_SS,curr_yr+1,"_Forecast/esc_ts_stock.csv"),row.names = FALSE)}
+if(params$sp=="Chinook"){write.csv(esc_ts_stock_new, paste0(drive_white,curr_yr+1,"_Forecast/esc_ts_stock.csv"),row.names = FALSE)}
+
+```
+<br>
+<br>
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
