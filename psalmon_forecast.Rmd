@@ -1,0 +1,2871 @@
+---
+author: "Matt Siskey"
+output:
+  html_document:
+    code_folding: hide
+    highlight: zenburn
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    theme: yeti
+    fig_caption: true
+    toc: true
+    number_sections: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+header-includes:
+   - \usepackage{floatrow}
+   - \floatsetup[figure]{capposition=top}
+params:
+  systems: "Puyallup River" #"Puyallup River" "White River"
+  forecast_year: "2025"
+title: "**`r params$forecast_year` `r params$systems` Chinook Forecast**"
+---
+
+```{=html}
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"https://privatelands.wdfw.wa.gov/wdfwlogo_clrnotxt.png"\" style=\"float: right;width: 100px;\"/>')
+   });
+</script>
+```
+
+------------------------------------------------------------------------
+Last Updated `r format(Sys.time(), '%m/%d/%Y')`.
+------------------------------------------------------------------------
+
+# **Introduction**
+
+---
+
+This script fits a suite of linear models that incorporate sibling, habitat, and other data sources to predict age-specific survival (rps and SAR) of Chinook salmon in the Puyallup Basin for the upcoming year. This script is parameterized by system, so the user can run the script for multiple systems; however, the addition of new systems  may require additional code dependent upon whether the data infratructure matches what is currently in place. All analyses require R software [**(link)**](https://cran.r-project.org/) (v4.2.3) for data processing and summarizing model results. At the top we set Knitr options for output formatting, designate current year and forecast year, load all packages required by the script, and designate working directories/create them if necessary. 
+<br>
+
+
+```{r setup, message = FALSE, warning = FALSE, results = "show"}
+# rm(list=ls())
+options(width = 100)
+knitr::opts_chunk$set(message = FALSE)
+
+library(ggplot2);library(readxl);library(ggh4x);library(dplyr);library(MuMIn);library(kableExtra);
+library(Hmisc);library(corrplot);library(data.table);library(purrr);library(tibble);library(rmdformats);
+
+fore_yr    <-as.numeric(params$forecast_year) # year forecasting for
+curr_yr    <-fore_yr-1 # year of new data
+
+### Drives
+drive_sp   <-paste0("S:/FP/FishMgmt/District 11/escapement_forecast_data/Chinook/")
+drive_syst <-paste0(drive_sp,params$systems,"/")
+# Forecast folders
+drive_syst_fore      <-paste0(drive_syst,fore_yr,"_Forecast")
+drive_syst_fore_next <-paste0(drive_syst,fore_yr+1,"_Forecast")
+if(!dir.exists(drive_syst_fore)){dir.create(drive_syst_fore,showWarnings = FALSE)}
+if(!dir.exists(paste0(drive_syst_fore,"/",curr_yr,"_Outputs"))){dir.create(paste0(drive_syst_fore,"/",curr_yr,"_Outputs"),showWarnings = FALSE)}
+if(!dir.exists(drive_syst_fore_next)){dir.create(drive_syst_fore_next,showWarnings = FALSE)}
+if(!dir.exists(paste0(drive_syst_fore_next,"/",fore_yr,"_Data"))){dir.create(paste0(drive_syst_fore_next,"/",fore_yr,"_Data"),showWarnings = FALSE)}
+if(!dir.exists(paste0(drive_syst_fore_next,"/",fore_yr,"_Outputs"))){dir.create(paste0(drive_syst_fore_next,"/",fore_yr,"_Outputs"),showWarnings = FALSE)}
+```
+
+# **Methods**
+
+---
+
+Pacific salmon terminal run size is forecasted for south Puget Sound systems using a suite of models that are fit to age-specific survival data, habitat data, and sibling survival data.  
+
+* The script calculates (1) proportions-at-age over time (P_at) from scale age data, (2) numbers-at-age over time (N_at) from these calculated P_at and indices of spawner abundance, and (3) resutling survival (rps or SAR) via age-specific abundance and total abundance.  
+* These survival estimates are then used in forecast model fitting.  
+* Akaike's information criterion corrected for small sample sizes (AICc) is calculated from the resulting model fits and used to identify the model with the lowest prediction error.  
+* Finally, AICc-selected model fits for each age class (ages 3-5) are then used to predict surival (rps and SAR) and terminal run size for the forecast year.   
+<br>
+
+
+## Setup
+      
+      
+``` {r load_data}
+# Define groups for each system, setup directories, & load data
+if(params$systems=="Puyallup River"){groups <-c("NOR","HOR")}
+if(params$systems=="White River"){   groups <-c("NOR","AP","WRH_sub","Hupp")}
+
+##### Read in new year of data
+if(params$systems=="White River"|params$systems=="Puyallup River"){ # tribal fishery catch
+  fishery_catch_new <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/fishery_catch.csv"))
+} 
+
+if(params$systems=="Puyallup River"){
+  ###
+  fishery_comps_new <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/",curr_yr,"_Fishery_ChinAges_QAQCd.csv")) # scale-based ages
+  spc_comps_new     <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/",curr_yr,"_SPC_ChinAges_QAQCd.csv")) # scale-based ages
+  voights_comps_new <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/",curr_yr,"_Voights_ChinAges_QAQCd.csv")) # scale-based ages
+  clarks_comps_new  <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/",curr_yr,"_ClarksCreek_ChinAges_QAQCd.csv")) # scale-based ages
+  ###
+  fishery_comps_new <-fishery_comps_new[,c("location_name","mark_types","gilbert_rich")]
+  ###
+  voights_comps_new <-voights_comps_new[,colnames(fishery_comps_new)] # samplers out of order; extra cols
+  spc_comps_new     <-spc_comps_new[,colnames(fishery_comps_new)] # samplers out of order; extra cols
+  clarks_comps_new     <-clarks_comps_new[,colnames(fishery_comps_new)] # samplers out of order; extra cols
+}
+
+if(params$systems=="White River"){
+  white_comps_new <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/",curr_yr,"_WhiteRiver_SpringChinookScaleAges_QAQC.csv")) # scale-based ages
+  hupp_RMIS_new   <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/",curr_yr-1,"_HuppSpringsRMIS_ReturnData.csv"))
+  WRH_comps_new   <-read.csv(paste0(drive_syst_fore,"/",curr_yr,"_Data/White River CWTs ",curr_yr,".csv"))
+}
+
+##### Read in historical datasets (updated in script)
+esc_ts        <-read.csv(paste0(drive_syst_fore,"/esc_ts_stock.csv"), check.names=FALSE)
+esc_ts_new    <-dplyr::filter(esc_ts, Year == curr_yr)
+if(params$systems=="Puyallup River"){hatch_returns <-read.csv(paste0(drive_syst_fore,"/hatchery_returns.csv"), check.names=FALSE)}
+if(params$systems=="White River"){counts <-read.csv(paste0(drive_syst_fore,"/counts.csv"), check.names=FALSE)}
+
+run_recon     <-read.csv(paste0(drive_syst_fore,"/run_reconstruction.csv"))
+
+##### Read in historical datasets (updated manually before reading in?)
+if(params$systems=="White River"|params$systems=="Puyallup River"){ # hatchery releases & returns
+  hatch_rel <-read.csv(paste0(drive_syst_fore,"/hatchery_releases.csv"))
+}
+props_ts <-read.csv(paste0(drive_syst_fore,"/age_props.csv")) # Update w/ new data for WRH_sub & Hupp prop-at-age 
+surv_hab <-read.csv(paste0(drive_sp,"/",curr_yr,"_Survival_HabitatCovariates_trim.csv")) # Habitat covariates for climate-based forecasts
+misc_dat <-read.csv(paste0(drive_sp,curr_yr,"_Puyallup River_Chinook Misc Data.csv"))
+```
+
+* Data inputs & source:
+  + Historical data
+    * **Proportions-at-age** (age_props.csv)
+    * **ETRS time series** for each system and stock (e.g., NOR, HOR; psalmon_escapement_v2.Rmd output; esc_ts_stock.csv)
+    * **Hatchery releases & returns** over time (hatchery_releases.csv & hatchery_returns.csv)
+    * **Run reconstruction** (i.e., fisheries catch, number passed, number held, etc.; run_reconstruction.csv)
+    `r if(params$systems=="White River"){"* **White River Hatchery DNA stock structure** (WRH_DNA_StockStructure.csv)  "}`
+    `r if(params$systems=="White River"){"* **Counts** of unmarked (UM), hatchery-origin (HOR), and acclimation pond (AP) fish by stage (Adult or Jack) from USACE (psalmon_escapement_v2.Rmd  "}`
+  + New data 
+    * **Age data** (remove subscript from gilbert_rich ages before using)
+      `r if(params$systems=="Puyallup River"){"+ South Prairie Creek scale ages"}`
+      `r if(params$systems=="Puyallup River"){"+ Voights Creek Hatchery scale ages"}`
+      `r if(params$systems=="Puyallup River"){"+ Clarks Creel Hatchery scale ages"}`
+      `r if(params$systems=="Puyallup River"){"+ Fishery (Puyalluo River - 81B) scale ages"}`
+      `r if(params$systems=="White River"){"+ White River scale ages"}`
+      `r if(params$systems=="White River"){"+ Hupp RMIS data for curr_yr-1 (202X_HuppSpringsRMIS_ReturnData.csv)"}`
+        `r if(params$systems=="White River"){"* Hupp is from RMIS data which is lagged 1 year; curr_yr-1 is calc'd in script from RMIS data, curr_yr is mean of previous 5 years  "}`
+      `r if(params$systems=="White River"){"+ White River Hatchery CWT data (White River CWTs 202X.csv)"}`
+    * **Fishery catch**
+      `r if(params$systems=="Puyallup River"){"+ *Puyallup Indian Tribe*: "}`
+        `r if(params$systems=="Puyallup River"){"* NOR = PIT_Fall Chinook_HarvestData_202X.xlsx > Fall Chinook XP > Expansion > Un-Marked"}`
+        `r if(params$systems=="Puyallup River"){"* HOR = PIT_Fall Chinook_HarvestData_202X.xlsx > Fall Chinook XP > Expansion > (Ad Clipped + AD w/ CWT + UM w/ CWT) + PIT_MIT_SpringChinookHarvestData_202X.xlsx > PTOI SPRING EXP 202X > Expansion > Ad Clipped"}`
+      `r if(params$systems=="Puyallup River"){"* *Muckleshoot Indian Tribe* (Catch_Sampling_202X.xlsx):"}`
+        `r if(params$systems=="Puyallup River"){"+ NOR = Summary > 81B/C Fall (MIT fall Chinook fishery) > UM - UM+CWT"}`
+        `r if(params$systems=="Puyallup River"){"+ HOR = Summary > 81B/C Fall (MIT fall Chinook fishery) > AD + AD+CWT + UM+CWT"}`
+      `r if(params$systems=="Puyallup River"){"* *WDFW Creel* (202X_Puyallup Creel Estimates.xlsx/202X_Carbon Creel Estimates.xlsx):"}`
+        `r if(params$systems=="Puyallup River"){"+ NOR = Puyallup_UM_kept + Carbon_UM_kept + (0.10 * Puyallup_UM_released) + (0.10 * Carbon_UM_released)"}`
+        `r if(params$systems=="Puyallup River"){"+ HOR = Puyallup_AD_kept + Carbon_AD_kept + (0.10 * Puyallup_AD_released) + (0.10 * Carbon_AD_released)"}`
+      `r if(params$systems=="White River"){"+ *Muckleshoot Indian Tribe* (Catch_Sampling_202X.xlsx):"}`
+          `r if(params$systems=="White River"){"+ NOR = Summary > 81C > UM"}`
+          `r if(params$systems=="White River"){"+ HOR = Summary > 81C > UM+CWT"}`
+          `r if(params$systems=="White River"){"+ AP  = Summary > 81C > Vent"}`
+      `r if(params$systems=="White River"){"* *Puyallup Indian Tribe* (PIT_MIT_SpringChinookHarvestData_202X.xlsx):"}`
+          `r if(params$systems=="White River"){"+ NOR = PTOI SPRING EXP 202X > Expansion > Un-Marked"}`
+          `r if(params$systems=="White River"){"+ HOR = PTOI SPRING EXP 202X > Expansion > UM w/ CWT"}`
+          `r if(params$systems=="White River"){"+ AP  = PTOI SPRING EXP 202X > Expansion > LV2 + RV3 + LV4 + RV5"}`
+    * **Miscellaneous Data** (202X_Puyallup Basin_Chinook Misc Data.csv)
+      `r if(params$systems=="Puyallup River"){"+ voights_hatchery_adults: pulled from WDFW hatchery escapement reports (https://wdfw.wa.gov/fishing/management/hatcheries/escapement)"}`
+      `r if(params$systems=="Puyallup River"){"+ voights_hatchery_jacks: pulled from WDFW hatchery escapement reports"}`
+      `r if(params$systems=="Puyallup River"){"+ clarks_hatchery_adults: pulled from WDFW hatchery escapement reports"}`
+      `r if(params$systems=="Puyallup River"){"+ clarks_hatchery_jacks: pulled from WDFW hatchery escapement reports"}`
+      `r if(params$systems=="Puyallup River"){"+ 2021_voights_releases & 2021_clarks_releases: 2024 Puyallup R. Fall Chinook Forecast.xlsx > HOR Brood Table and RR > Smolt Releases table"}`
+      `r if(params$systems=="White River"){"+ AP_held_adults, AP_held_jacks"}`
+      `r if(params$systems=="White River"){"+ spring_NOR_live, spring_NOR_mort, spring_HOR_CWT, fall, unknown, no sample"}`
+        `r if(params$systems=="White River"){"* Pulled from WRH DNA stock structure assignments (White River Chinook Memo.docx)"}`
+      `r if(params$systems=="White River"){"+ hupp_rack_returns: MINTER CR HATCHERY > Spring Chinook taken from December week 2 hatchery report (https://wdfw.wa.gov/fishing/management/hatcheries/escapement)"}`
+      `r if(params$systems=="White River"){"+ 2021_WRH_releases"}`
+      `r if(params$systems=="White River"){"+ 2021_Hupp_releases"}`
+    * **Habitat Covariate Data** (202X_Survival_HabitatCovariates_trim.csv)
+`r if(params$systems=="Puyallup River"){"* Gather Puyallup data for run reconstruction below"}`
+
+``` {r gather_data}
+# Gather counts, props_ts, and run reconstruction data  to use in forecasts
+if(params$systems=="Puyallup River"){
+  # systems       <-colnames(esc_ts_new)[-c(1,ncol(esc_ts_new))]
+  systems <-c("Boise Creek", "Canyon Falls","Carbon River","Clear Creek", "Fennel Creek", "Kapowsin Creek", "Puyallup River", "Salmon Creek", "South Prairie Creek", "Wilkeson Creek")
+  hatchery_cols <-c("hatchery_natural_spawners","voights_hatchery_adults","voights_hatchery_jacks","clarks_hatchery_adults","clarks_hatchery_jacks")
+  
+  hatch_rel[nrow(hatch_rel)+1,"brood_yr"]       <-curr_yr-2
+  hatch_rel[nrow(hatch_rel),"voights_releases"] <-misc_dat[which(misc_dat$Type==paste0(curr_yr-2,"_voights_releases")),"Value"]
+  hatch_rel[nrow(hatch_rel),"clarks_releases"]  <-misc_dat[which(misc_dat$Type==paste0(curr_yr-2,"_clarks_releases")),"Value"]
+  
+  hatch_rel$total_releases <-hatch_rel$voights_releases+hatch_rel$clarks_releases
+  puy_hatch_dat            <-c(sum(dplyr::filter(esc_ts_new, Stock=="HOR")[,systems]),
+                               dplyr::filter(misc_dat, Type %in% c(hatchery_cols[-1]))$Value)
+  
+  # hatch_returns[nrow(hatch_returns)+1,c("return_yr",systems)] <-c(curr_yr,as.numeric(counts_new[which(counts_new$Stock=="Total"),systems]))
+  hatch_returns[nrow(hatch_returns)+1,]            <-c(curr_yr,puy_hatch_dat,sum(esc_ts_new[,systems]))
+  esc_ts[is.na(esc_ts)]<-0
+  esc                                        <-dplyr::filter(hatch_returns, return_yr>=min(esc_ts[which(esc_ts$Stock=="NOR"),"Year"]))
+  esc$total_wild_esc                         <-rowSums(dplyr::filter(esc_ts, Stock=="NOR")[,systems])
+  new_twe                              <-esc[which(esc$return_yr==curr_yr),"total_wild_esc"] + (dplyr::filter(misc_dat, Type=="fall_total")$Value - dplyr::filter(misc_dat, Type=="fall_held")$Value)
+  esc[which(esc$return_yr==curr_yr),"total_wild_esc"] <-NA
+  esc[which(esc$return_yr==curr_yr),"total_wild_esc"] <-new_twe
+  
+  esc$total_natural_spawners                 <-esc$hatchery_natural_spawners + esc$total_wild_esc
+  esc$wild_natural_spawners                  <-esc$total_natural_spawners -    esc$hatchery_natural_spawners
+  esc$total_hatchery_adults                  <-esc$voights_hatchery_adults +   esc$clarks_hatchery_adults
+  esc$total_hatchery_jacks                   <-esc$voights_hatchery_jacks +    esc$clarks_hatchery_jacks
+  esc$total_hatchery_returns                 <-esc$total_hatchery_adults +     esc$total_hatchery_jacks
+  esc$total_hatchery_adult_esc               <-esc$hatchery_natural_spawners + esc$total_hatchery_adults
+  esc$total_puy_esc                          <-esc$total_wild_esc +            esc$total_hatchery_adult_esc
+  esc$hatchery_stray_rate                    <-esc$hatchery_natural_spawners/  esc$total_hatchery_adult_esc
+  esc$prop_voights_adults                    <-esc$voights_hatchery_adults/    esc$total_hatchery_returns
+  esc$pHOS                                   <-esc$hatchery_natural_spawners/  esc$total_natural_spawners
+}
+
+```
+
+## Calculate P_at
+* Calculate new year of proportions_at_age from scale samples for N_at_age calculations below
+  + Age-2: Excel workbook method calculates age-2 P_at separately (i.e., age-2 counts from RMIS ignored)
+  + Ages 3-5: P_at = Nscales_at/Nscales_t
+
+
+``` {r calc_P_at, fig.cap="**Figure 1.** Proportions-at-age over return years included in survey collections.", fig.topcaption = TRUE, fig.width=10}
+# Calc new year of prop_at_age for N_at_age calcs
+if(params$systems=="White River"){   
+  hatch_rel$fore_accuracy <-hatch_rel$hupp_rack_return_fore/hatch_rel$hupp_rack_returns
+  fore_accuracy           <-mean(dplyr::filter(hatch_rel,return_yr>=fore_yr-5)$fore_accuracy)
+}
+
+props_ts_sys <-list()
+
+# for(g in 1:3){
+for(g in 1:length(groups)){
+  if(params$systems=="Puyallup River"){comps_new <-rbind(spc_comps_new, clarks_comps_new, voights_comps_new, fishery_comps_new)}
+  if(params$systems=="White River"){   comps_new <-white_comps_new}
+  if(params$systems=="Puyallup River"|params$systems=="White River"){
+    if(params$systems=="White River"){
+      if(groups[g]=="NOR"){    
+         wr_UM_types <-c("Unmarked","Unmarked, Passive Integrated Transponder","Unmarked,Passive Integrated Transponder",
+                         "Passive Integrated Transponder, Unmarked","Unmarked; Passive Integrated Transponder")
+         comps_temp <-dplyr::filter(comps_new,  mark_types %in% wr_UM_types)
+         # comps_temp <-comps_new[which(comps_new$mark_types=="Unmarked"),]
+         comps_new  <-comps_temp
+      }
+      if(groups[g]=="AP"){
+         wr_AP_types <-c("Left Pectoral","Left Ventral","Left Ventral, Passive Integrated Transponder","Passive Integrated Transponder,
+                         Right Ventral","Right Ventral","Right Ventral, Passive Integrated Transponder")
+         comps_temp <-dplyr::filter(comps_new,  mark_types %in% wr_AP_types)
+         # comps_temp <-comps_new[which(comps_new$mark_types=="Left Ventral" | comps_new$mark_types=="Right Ventral"),]
+         comps_new  <-comps_temp
+      }
+      if(groups[g]=="WRH_sub"){
+         colnames(WRH_comps_new)[15] <-"gilbert_rich"
+         # WRH_comps_new <-dplyr::filter(WRH_comps_new, Hatchery == "White River")
+         comps_new <-WRH_comps_new
+      }
+    }
+    if(params$systems=="Puyallup River"){
+      if(groups[g]=="NOR"){comps_temp1 <-dplyr::filter(comps_new, mark_types=="Unmarked" & location_name==c("South Prairie Creek"))
+                           comps_temp2 <-dplyr::filter(comps_new, mark_types=="Unmarked" & location_name==c("Puyallup River - 81B"))
+                           comps_temp <-rbind(comps_temp1,comps_temp2)
+                           }
+      if(groups[g]=="HOR"){
+                          comps_temp1 <-dplyr::filter(comps_new, location_name==c("Clarks Cr Hatchery"))
+                          comps_temp2 <-dplyr::filter(comps_new, location_name==c("Voights Creek Hatchery"))
+                          comps_temp <-rbind(comps_temp1,comps_temp2)
+                          }
+      comps_new <-comps_temp
+    }
+    scale_age_counts <-table(comps_new$gilbert_rich)
+    if(class(comps_new$gilbert_rich)=="character"){
+      age_2     <-as.numeric(ifelse(is.na(scale_age_counts["2?"])==FALSE,scale_age_counts["2?"],0))
+      age_3     <-as.numeric(ifelse(is.na(scale_age_counts["3?"])==FALSE,scale_age_counts["3?"],0))
+      age_4     <-as.numeric(ifelse(is.na(scale_age_counts["4?"])==FALSE,scale_age_counts["4?"],0))
+      age_5     <-as.numeric(ifelse(is.na(scale_age_counts["5?"])==FALSE,scale_age_counts["5?"],0))
+    }
+    if(class(comps_new$gilbert_rich)=="integer"){
+      age_2     <-as.numeric(ifelse(is.na(scale_age_counts["2"])==FALSE,scale_age_counts["2"],0))
+      age_3     <-as.numeric(ifelse(is.na(scale_age_counts["3"])==FALSE,scale_age_counts["3"],0))
+      age_4     <-as.numeric(ifelse(is.na(scale_age_counts["4"])==FALSE,scale_age_counts["4"],0))
+      age_5     <-as.numeric(ifelse(is.na(scale_age_counts["5"])==FALSE,scale_age_counts["5"],0))
+    }
+    comps_new <-as.data.frame(rbind(age_2,age_3,age_4,age_5))
+    if(groups[g]=="WRH_sub"){colnames(comps_new) <-'WRH_sub'}
+    if(groups[g]=="HOR"){    colnames(comps_new) <-'HOR'}
+    if(groups[g]=="NOR"){    colnames(comps_new) <-'NOR'}
+    if(groups[g]=="AP"){     colnames(comps_new) <-'AP'}
+  }
+  if(groups[g]=="NOR"|groups[g]=="AP"|groups[g]=="HOR"|groups[g]=="WRH_sub"){
+    props_ts_temp <-dplyr::filter(props_ts,Group==groups[g])
+    props_ts_temp <-rbind(props_ts_temp,
+                          c(as.numeric(max(props_ts_temp$return_yr))+1,
+                            0, # they calc prop-at-age for adults and jacks separately
+                            (comps_new[2,groups[g]]/sum(comps_new[2:4,groups[g]])),
+                            (comps_new[3,groups[g]]/sum(comps_new[2:4,groups[g]])),
+                            (comps_new[4,groups[g]]/sum(comps_new[2:4,groups[g]])),
+                            0,
+                            groups[g]))
+    }
+  if(groups[g]=="Hupp"){
+    props_ts_temp <-dplyr::filter(props_ts,Group==groups[g])
+    
+    # Gather 1-yr lagged RMIS data & calc prop-at-age for curr_yr-1
+    # if(curr_yr>2023){hupp_RMIS_broodyr    <-table(hupp_RMIS_new$run_year)}
+    # if(curr_yr<2024){hupp_RMIS_broodyr    <-table(hupp_RMIS_new$brood_year)}
+    # hupp_RMIS_total                       <-sum(hupp_RMIS_broodyr)
+    # props_ts_temp[nrow(props_ts_temp),]   <-c(curr_yr-1,0,
+    #                                           as.numeric(hupp_RMIS_broodyr[as.character(curr_yr-4)])/hupp_RMIS_total,
+    #                                           as.numeric(hupp_RMIS_broodyr[as.character(curr_yr-5)])/hupp_RMIS_total,
+    #                                           as.numeric(hupp_RMIS_broodyr[as.character(curr_yr-6)])/hupp_RMIS_total,
+    #                                           0,groups[g])
+    # props_ts_temp[,c(2:6)] <-as.numeric(unlist(props_ts_temp[,c(2:6)]))
+
+    # Calc mean prop-at-age to use for curr_yr
+    props_ts_temp[nrow(props_ts_temp)+1,] <-c(curr_yr,0,
+                                              mean(dplyr::filter(props_ts_temp,return_yr > curr_yr-6)$age_3),
+                                              mean(dplyr::filter(props_ts_temp,return_yr > curr_yr-6)$age_4),
+                                              mean(dplyr::filter(props_ts_temp,return_yr > curr_yr-6)$age_5),
+                                              0,groups[g])
+  }
+  props_ts_temp[,c(2:6)] <-as.numeric(unlist(props_ts_temp[,c(2:6)]))
+
+  props_ts_sys[[g]]      <-props_ts_temp
+  
+}
+names(props_ts_sys) <-groups
+props_ts_sys_df     <-map_df(props_ts_sys,~as.data.frame(.))
+
+props_ts_long <-tidyr::gather(props_ts_sys_df, Age_Class, P_at, age_2,age_3,age_4,age_5,age_6) # make wide df long
+
+ggplot()+
+  geom_point(data=props_ts_long,aes(x=return_yr,y=Age_Class,size=P_at))+
+  facet_wrap(.~Group)+
+  theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=1))
+
+if(params$systems=="Puyallup River"){
+  props_ts_sys_df[,c(1,3,4,5)] %>%
+    dplyr::filter(return_yr>=(curr_yr-4)) %>%
+    kbl(row.names = FALSE, caption = "Table 1. Proportions-at-age over return years included in survey collections.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 5, "HOR" = 5))
+}
+
+if(params$systems=="White River"){
+  props_ts_sys_df[,c(1,3,4,5)] %>%
+    dplyr::filter(return_yr>=(curr_yr-4)) %>%
+    kbl(row.names = FALSE, caption = "Table 1. Proportions-at-age over return years included in survey collections.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 5, "AP" = 5, "WRH_sub" = 5, "Hupp" = 5))
+}
+
+```
+<br>
+<br>
+
+
+## Run reconstruction & calculating N_at  
+
+* Add new year of counts, fishery, and rack data to run reconstruction for N_at_age calc
+
+``` {r run_recon}
+# Add new year of counts, fishery, and rack data to run reconstruction for N_at_age calc
+run_recon                                  <-read.csv(paste0(drive_syst_fore,"/run_reconstruction.csv"))
+run_recon[(nrow(run_recon)+1),"return_yr"] <-max(run_recon$return_yr)+1
+run_recon[(nrow(run_recon)),"HORs_catch"]  <-sum(fishery_catch_new$HOR)
+
+if(params$systems=="Puyallup River"){run_recon[(nrow(run_recon)),"NORs_catch"] <-sum(fishery_catch_new$NOR)}
+if(params$systems=="White River"){  
+  run_recon[(nrow(run_recon)),"NORs_catch"] <-sum(fishery_catch_new$NOR)
+  run_recon[(nrow(run_recon)),"AP_catch"]          <-sum(fishery_catch_new$AP)
+  run_recon[(nrow(run_recon)),"NORs_passed"]       <-tail(dplyr::filter(counts,Stage=="Adults")$NOR_passed,1)
+  run_recon[(nrow(run_recon)),"NORs_held"]         <-tail(dplyr::filter(counts,Stage=="Adults")$NOR_held,1)
+  run_recon[(nrow(run_recon)),"HORs_passed"]       <-tail(dplyr::filter(counts,Stage=="Adults")$HOR_passed,1)
+  run_recon[(nrow(run_recon)),"HORs_held"]         <-tail(dplyr::filter(counts,Stage=="Adults")$HOR_held,1)
+  run_recon[(nrow(run_recon)),"AP_passed"]         <-tail(dplyr::filter(counts,Stage=="Adults")$AP_passed,1)
+  run_recon[(nrow(run_recon)),"AP_held"]           <-tail(dplyr::filter(counts,Stage=="Adults")$AP_held,1)
+  run_recon[(nrow(run_recon)),"Hupp_rack_returns"] <-dplyr::filter(misc_dat,Type=="hupp_rack_returns")$Value
+  run_recon$NORs_to_river                          <-run_recon$NORs_held + run_recon$NORs_passed + run_recon$NORs_catch
+  run_recon$AP_to_river                            <-run_recon$AP_passed + run_recon$AP_catch
+  run_recon$WRH_to_river                           <-run_recon$HORs_held + run_recon$HORs_passed + run_recon$HORs_catch
+  run_recon$Total_passed                           <-run_recon$NORs_passed + run_recon$HORs_passed + run_recon$AP_passed
+  
+  UM_recon            <-run_recon[,c("return_yr","NORs_catch","NORs_passed","NORs_held","NORs_to_river")]
+  UM_recon$Stock      <-rep("UM",nrow(UM_recon))
+  colnames(UM_recon)  <-c("return_yr","catch","passed","held","to_river","Stock")
+  HOR_recon           <-run_recon[,c("return_yr","HORs_catch","HORs_passed","HORs_held","WRH_to_river")]
+  HOR_recon$Stock     <-rep("HOR",nrow(HOR_recon))
+  colnames(HOR_recon) <-c("return_yr","catch","passed","held","to_river","Stock")
+  AP_recon            <-run_recon[,c("return_yr","AP_catch","AP_passed","AP_held","AP_to_river")]
+  AP_recon$Stock      <-rep("AP",nrow(AP_recon))
+  colnames(AP_recon)  <-c("return_yr","catch","passed","held","to_river","Stock")
+
+  recon <-rbind(UM_recon,HOR_recon,AP_recon)
+  
+  recon %>%
+    dplyr::filter(return_yr>=curr_yr-4) %>%
+    kbl(caption="Table 2. Annual fishery catch by stock and hatchery rack return data that are used in run reconstruction.",digits=1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("UM"  = length((curr_yr-4):curr_yr),
+                        "WRH_sub"  = length((curr_yr-4):curr_yr),
+                        "AP"  = length((curr_yr-4):curr_yr)))  %>%
+    row_spec(seq(5, 15, 5), extra_css = "border-bottom: 1px solid;")
+}  
+if(params$systems=="Puyallup River"){
+  run_recon[(nrow(run_recon)),"voights_rack_returns"]     <-dplyr::filter(misc_dat,Type=="voights_hatchery_adults")$Value
+  run_recon[(nrow(run_recon)),"clarks_rack_returns"]    <-dplyr::filter(misc_dat,Type=="clarks_hatchery_adults")$Value
+  run_recon$total_rack_returns                         <-run_recon$voights_rack_returns + run_recon$clarks_rack_returns
+  
+  run_recon %>%
+    dplyr::filter(return_yr>=2018) %>%
+    kbl(row.names = FALSE, caption = "Table 2. Annual fishery catch by stock and hatchery rack return data that are used in run reconstruction.",digits=1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+}
+
+```
+<br>
+<br>
+
+* Calculate numbers for each age class, return_yr, and stock
+`r if(params$systems=="Puyallup River"){"  + Age-2: N_at  = Voights Hatchery Jacks + Clarks Hatchery Jacks"}`
+`r if(params$systems=="Puyallup River"){"  + NOR Ages 3-5: N_at = P_at * (NOR_catch + NOR_spawn)"}`
+`r if(params$systems=="Puyallup River"){"  + HOR Ages 3-5: N_at = P_at * (HOR_catch + HOR_spawn + HOR_rack_return)"}`
+`r if(params$systems=="White River"){"  + Age-2: N_at  = MMD jack count [each respective group]"}`
+`r if(params$systems=="White River"){"  + NOR Ages 3-5: N_at = P_at * (NOR_catch + NOR_passed + NOR_to_WRH)"}`
+`r if(params$systems=="White River"){"  + HOR Ages 3-5: N_at = P_at * (HOR_catch + HOR_passed + HOR_to_WRH)"}`
+`r if(params$systems=="White River"){"  + AP Ages 3-5: N_at = P_at * (AP_catch + AP_passed)"}`
+`r if(params$systems=="White River"){"  + Hupp Ages 3-5: N_at = mean(P_at-6:P_at-1) * rack_return"}`
+
+``` {r calc_N_at, fig.cap = "**Figure 2.** Numbers-at-age over time for each stock.", fig.topcaption = TRUE, fig.height=7, fig.width=8}
+if(params$systems=="White River"){
+  hatch_rel[nrow(hatch_rel)+1,"brood_yr"]        <-curr_yr
+  hatch_rel[nrow(hatch_rel),"return_yr"]         <-curr_yr
+  hatch_rel[nrow(hatch_rel),"hupp_rack_returns"] <-dplyr::filter(misc_dat,Type=="hupp_rack_returns")$Value
+  hatch_rel[nrow(hatch_rel),"hupp_jack_returns"] <-dplyr::filter(misc_dat,Type=="hupp_jack_returns")$Value
+  hatch_rel[which(hatch_rel$brood_yr==fore_yr-3),"WRH_releases"] <-dplyr::filter(misc_dat,Type==paste0(fore_yr-3,"_WRH_releases"))$Value
+  hatch_rel[which(hatch_rel$brood_yr==fore_yr-3),"Hupp_releases"] <-dplyr::filter(misc_dat,Type==paste0(fore_yr-3,"_Hupp_releases"))$Value
+  hatch_rel[which(hatch_rel$brood_yr==fore_yr-3),"AP_releases"] <-dplyr::filter(misc_dat,Type==paste0(fore_yr-3,"_AP_releases"))$Value
+}
+
+N_at_age2_g <-list()
+N_at_age3_g <-list()
+N_at_age4_g <-list()
+N_at_age5_g <-list()
+
+for(g in 1:length(groups)){
+  temp <-dplyr::filter(props_ts_sys_df,Group==groups[g])
+  # Calc numbers-at-age for each group
+  if(groups[g]=="NOR"){
+    if(params$systems=='Puyallup River'){
+      N_at_age <-cbind(temp$return_yr,
+                       c(rep(0,length(temp$return_yr))),
+                       temp[,3:6]*(dplyr::filter(run_recon,return_yr>=2001)$NORs_catch + c(0,dplyr::filter(esc,return_yr>=2001)$total_wild_esc)),
+                       temp$Group)
+      }
+    if(params$systems=='White River'){
+      N_at_age <-cbind(temp$return_yr,
+                       c(rep(0,10),dplyr::filter(counts,Stage=="Jacks")$NOR_passed),
+                       temp[,3:6]*run_recon$NORs_to_river,
+                       temp$Group)
+      }
+  }
+  if(groups[g]=="HOR"){
+    if(params$systems=='Puyallup River'){
+      HOR_catch  <-dplyr::filter(run_recon,return_yr>=2001)$HORs_catch
+      HOR_spawn  <-c(1092,dplyr::filter(esc,return_yr>=2002)$hatchery_natural_spawners)
+      HOR_return <-c(0,dplyr::filter(esc,return_yr>=2001)$total_hatchery_adults)
+      N_at_age <-cbind(temp$return_yr,
+                       # c(rep(0,length(temp$return_yr))),
+                       c(rep(0,3),dplyr::filter(esc,return_yr>=2004)$total_hatchery_jacks),
+                       temp[,3:6]*(HOR_catch + HOR_spawn + HOR_return),
+                       temp$Group)
+    }
+  }
+  if(groups[g]=="AP"){
+    N_at_age           <-cbind(temp$return_yr,
+                               c(rep(0,3),dplyr::filter(counts,Stage=="Jacks")$AP_passed),
+                               temp[,3:6]*run_recon[-c(1:7),"AP_to_river"],
+                               temp$Group)}
+  if(groups[g]=="WRH_sub"){
+
+    
+    WRH_HOR_sub_held   <-c(c(54,56,355,410,500,481),
+                           dplyr::filter(counts,Stage=="Adults" & return_yr>=1998 & return_yr<=2020)$HOR_held* 
+                              dplyr::filter(hatch_rel,return_yr>=1998 & return_yr<=2020)$WRH_prop_sub,
+                           dplyr::filter(counts,Stage=="Adults" & return_yr>2020 & return_yr<=curr_yr)$HOR_held)
+    WRH_HOR_sub_passed <-c(c(rep(0,7),1,10,29,1,21,17,56,85,580,317,155,77,125,85,512,77),
+                           dplyr::filter(counts,Stage=="Adults" & return_yr>=2015 & return_yr<=2020)$HOR_passed*
+                              dplyr::filter(hatch_rel,brood_yr>=2015 & brood_yr<=2020)$WRH_prop_sub,
+                           dplyr::filter(counts,Stage=="Adults" & return_yr>2020 & return_yr<=curr_yr)$HOR_passed)                     
+    WRH_HOR_sub_catch  <-dplyr::filter(run_recon,return_yr>=1992 & return_yr<=fore_yr-1)$HORs_catch
+    
+    
+    WRH_total_sub      <-WRH_HOR_sub_held + WRH_HOR_sub_passed + WRH_HOR_sub_catch
+    N_at_age           <-cbind(temp$return_yr,
+                               c(rep(0,6),dplyr::filter(counts,Stage=="Jacks")$HOR_spring_total),
+                               temp[,3:6]*WRH_total_sub,
+                               temp$Group)
+  }
+  if(groups[g]=="Hupp"){
+    N_at_age           <-cbind(c(temp$return_yr),
+                               dplyr::filter(hatch_rel,return_yr>=2004)$hupp_jack_returns,
+                               temp[,3:6]*dplyr::filter(hatch_rel,return_yr>=2004)$hupp_rack_returns,
+                               temp$Group)
+  }
+  
+  colnames(N_at_age) <-c("return_yr",'age_2',"age_3","age_4","age_5","age_6","Group")
+  
+  N_at_age2 <-as.data.frame(cbind(N_at_age$return_yr,as.numeric(N_at_age$return_yr)-2,N_at_age$age_2))
+  N_at_age3 <-as.data.frame(cbind(N_at_age$return_yr,as.numeric(N_at_age$return_yr)-3,N_at_age$age_3))
+  N_at_age4 <-as.data.frame(cbind(N_at_age$return_yr,as.numeric(N_at_age$return_yr)-4,N_at_age$age_4))
+  N_at_age5 <-as.data.frame(cbind(N_at_age$return_yr,as.numeric(N_at_age$return_yr)-5,N_at_age$age_5))
+  
+  if(groups[g]=="NOR"){
+    if(params$systems=='White River'){
+      N_at_age2     <-N_at_age2[-c(1:2),]
+      N_at_age2     <-as.data.frame(cbind(N_at_age2,run_recon[-c((nrow(run_recon)-1):nrow(run_recon)),"Total_passed"]))
+      N_at_age3     <-N_at_age3[-c(1:3),]
+      N_at_age3     <-as.data.frame(cbind(N_at_age3,run_recon[-c((nrow(run_recon)-2):nrow(run_recon)),"Total_passed"]))
+      N_at_age4     <-N_at_age4[-c(1:4),]
+      N_at_age4     <-as.data.frame(cbind(N_at_age4,run_recon[-c((nrow(run_recon)-3):nrow(run_recon)),"Total_passed"]))
+      N_at_age5     <-N_at_age5[-c(1:5),]
+      N_at_age5     <-as.data.frame(cbind(N_at_age5,run_recon[-c((nrow(run_recon)-4):nrow(run_recon)),"Total_passed"]))}
+    if(params$systems=="Puyallup River"){
+      N_at_age2 <-dplyr::filter(N_at_age2, V1 >= 2002)
+      N_at_age2 <-as.data.frame(cbind(N_at_age2,esc$total_natural_spawners))
+      N_at_age3 <-as.data.frame(cbind(dplyr::filter(N_at_age3,V2>=2002),dplyr::filter(esc,return_yr<=curr_yr-3)$total_natural_spawners))
+      N_at_age4 <-as.data.frame(cbind(dplyr::filter(N_at_age4,V2>=2002),dplyr::filter(esc,return_yr<=curr_yr-4)$total_natural_spawners))
+      N_at_age5 <-as.data.frame(cbind(dplyr::filter(N_at_age5,V2>=2002),dplyr::filter(esc,return_yr>=1998&return_yr<=curr_yr-5)$total_natural_spawners))
+      }
+  }
+  if(groups[g]=="HOR"){
+    if(params$systems=="Puyallup River"){
+      N_at_age2 <-N_at_age2[-c(1:3),]
+      N_at_age2 <-as.data.frame(cbind(N_at_age2,dplyr::filter(hatch_rel,brood_yr>=2002&brood_yr<=curr_yr-2)$total_releases))
+      N_at_age3 <-as.data.frame(cbind(N_at_age3,dplyr::filter(hatch_rel,brood_yr>=1998&brood_yr<=curr_yr-3)$total_releases))
+      N_at_age4 <-N_at_age4[-1,]
+      N_at_age4 <-as.data.frame(cbind(N_at_age4,dplyr::filter(hatch_rel,brood_yr>=1998&brood_yr<=curr_yr-4)$total_releases))
+      N_at_age5 <-N_at_age5[-c(1,2),]
+      N_at_age5 <-as.data.frame(cbind(N_at_age5,dplyr::filter(hatch_rel,brood_yr>=1998&brood_yr<=curr_yr-5)$total_releases))
+    }
+  }
+  if(groups[g]=="AP"){
+    N_at_age2      <-N_at_age2[-c(1:2),]
+    N_at_age2      <-as.data.frame(cbind(N_at_age2,dplyr::filter(hatch_rel,brood_yr>=1995 & brood_yr<=fore_yr-3)$AP_releases))
+    N_at_age3      <-N_at_age3[-c(1:3),]
+    N_at_age3      <-as.data.frame(cbind(N_at_age3,dplyr::filter(hatch_rel,brood_yr>=1995 & brood_yr<=fore_yr-4)$AP_releases))
+    N_at_age4      <-N_at_age4[-c(1:4),]
+    N_at_age4      <-as.data.frame(cbind(N_at_age4,dplyr::filter(hatch_rel,brood_yr>=1995 & brood_yr<=fore_yr-5)$AP_releases))
+    N_at_age5      <-N_at_age5[-c(1:5),]
+    N_at_age5      <-as.data.frame(cbind(N_at_age5,dplyr::filter(hatch_rel,brood_yr>=1995 & brood_yr<=fore_yr-6)$AP_releases))
+  }
+  if(groups[g]=="WRH_sub"){
+    N_at_age2 <-N_at_age2[-c(1:2),]
+    N_at_age2 <-as.data.frame(cbind(N_at_age2,dplyr::filter(hatch_rel,brood_yr>=1992 & brood_yr<=fore_yr-3)$WRH_releases))
+    N_at_age3 <-N_at_age3[-c(1:3),]
+    N_at_age3 <-as.data.frame(cbind(N_at_age3,dplyr::filter(hatch_rel,brood_yr>=1992 & brood_yr<=fore_yr-4)$WRH_releases))
+    N_at_age4 <-N_at_age4[-c(1:4),]
+    N_at_age4 <-as.data.frame(cbind(N_at_age4,dplyr::filter(hatch_rel,brood_yr>=1992 & brood_yr<=fore_yr-5)$WRH_releases))
+    N_at_age5 <-N_at_age5[-c(1:5),]
+    N_at_age5 <-as.data.frame(cbind(N_at_age5,dplyr::filter(hatch_rel,brood_yr>=1992 & brood_yr<=fore_yr-6)$WRH_releases))
+  }
+  if(groups[g]=="Hupp"){
+    N_at_age2    <-as.data.frame(cbind(N_at_age2,dplyr::filter(hatch_rel,brood_yr>=2002 & brood_yr<=fore_yr-3)$Hupp_releases))
+    N_at_age3    <-N_at_age3[-1,]
+    N_at_age3    <-as.data.frame(cbind(N_at_age3,dplyr::filter(hatch_rel,brood_yr>=2002 & brood_yr<=fore_yr-4)$Hupp_releases))
+    N_at_age4    <-N_at_age4[-c(1:2),]
+    N_at_age4    <-as.data.frame(cbind(N_at_age4,dplyr::filter(hatch_rel,brood_yr>=2002 & brood_yr<=fore_yr-5)$Hupp_releases))
+    N_at_age5    <-N_at_age5[-c(1:3),]
+    N_at_age5    <-as.data.frame(cbind(N_at_age5,dplyr::filter(hatch_rel,brood_yr>=2002 & brood_yr<=fore_yr-6)$Hupp_releases))
+  }
+  if(params$systems=="White River"){        
+    colnames(N_at_age2) <-c("return_yr","brood_yr","age_2","total_passed_lag2")
+    colnames(N_at_age3) <-c("return_yr","brood_yr","age_3","total_passed_lag3")
+    colnames(N_at_age4) <-c("return_yr","brood_yr","age_4","total_passed_lag4")
+    colnames(N_at_age5) <-c("return_yr","brood_yr","age_5","total_passed_lag5")
+    N_at_age2$age2_rps  <-as.numeric(N_at_age2$age_2)/N_at_age2$total_passed_lag2
+    N_at_age3$age3_rps  <-as.numeric(N_at_age3$age_3)/N_at_age3$total_passed_lag3
+    N_at_age4$age4_rps  <-as.numeric(N_at_age4$age_4)/N_at_age4$total_passed_lag4
+    N_at_age5$age5_rps  <-as.numeric(N_at_age5$age_5)/N_at_age5$total_passed_lag5
+    if(groups[g]=="WRH_sub"){
+      N_at_age2 <-N_at_age2[-c(1:4),]
+      N_at_age3 <-N_at_age3[-c(1:4),]
+      N_at_age4 <-N_at_age4[-c(1:4),]
+      N_at_age5 <-N_at_age5[-c(1:4),]
+    }
+  }
+  if(params$systems=="Puyallup River"){
+    if(groups[g]=="NOR"){
+      colnames(N_at_age2) <-c("return_yr","brood_yr","age_2","total_natural_spawners")
+      colnames(N_at_age3) <-c("return_yr","brood_yr","age_3","total_natural_spawners")
+      colnames(N_at_age4) <-c("return_yr","brood_yr","age_4","total_natural_spawners")
+      colnames(N_at_age5) <-c("return_yr","brood_yr","age_5","total_natural_spawners")
+      N_at_age2$age2_rps  <-as.numeric(N_at_age2$age_2)/N_at_age2$total_natural_spawners
+      N_at_age3$age3_rps  <-as.numeric(N_at_age3$age_3)/N_at_age3$total_natural_spawners
+      N_at_age4$age4_rps  <-as.numeric(N_at_age4$age_4)/N_at_age4$total_natural_spawners
+      N_at_age5$age5_rps  <-as.numeric(N_at_age5$age_5)/N_at_age5$total_natural_spawners
+    }
+    if(groups[g]=="HOR"){
+      colnames(N_at_age2) <-c("return_yr","brood_yr","age_2","total_released")
+      colnames(N_at_age3) <-c("return_yr","brood_yr","age_3","total_released")
+      colnames(N_at_age4) <-c("return_yr","brood_yr","age_4","total_released")
+      colnames(N_at_age5) <-c("return_yr","brood_yr","age_5","total_released")
+      N_at_age2$age2_rps  <-as.numeric(N_at_age2$age_2)/N_at_age2$total_released
+      N_at_age3$age3_rps  <-as.numeric(N_at_age3$age_3)/N_at_age3$total_released
+      N_at_age4$age4_rps  <-as.numeric(N_at_age4$age_4)/N_at_age4$total_released
+      N_at_age5$age5_rps  <-as.numeric(N_at_age5$age_5)/N_at_age5$total_released
+    }
+  }
+  N_at_age2_g[[g]] <-N_at_age2
+  N_at_age3_g[[g]] <-N_at_age3
+  N_at_age4_g[[g]] <-N_at_age4
+  N_at_age5_g[[g]] <-N_at_age5
+}  
+names(N_at_age2_g) <-groups
+names(N_at_age3_g) <-groups
+names(N_at_age4_g) <-groups
+names(N_at_age5_g) <-groups
+
+# if("NOR" %in% groups){
+if(length(groups)>=1){
+  N_at_g1 <-as.data.frame(cbind(N_at_age3_g[[groups[1]]]$brood_yr,
+                                 N_at_age3_g[[groups[1]]]$age_3,
+                                 c(N_at_age4_g[[groups[1]]]$age_4,0),
+                                 c(N_at_age5_g[[groups[1]]]$age_5,0,0)))
+  colnames(N_at_g1) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5")
+}
+
+if(length(groups)>=2){
+  N_at_g2 <-as.data.frame(cbind(N_at_age3_g[[groups[2]]]$brood_yr,
+                                 N_at_age3_g[[groups[2]]]$age_3,
+                                 c(N_at_age4_g[[groups[2]]]$age_4,0),
+                                 c(N_at_age5_g[[groups[2]]]$age_5,0,0)))
+  colnames(N_at_g2) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5")
+}
+
+if(length(groups)>=3){
+  N_at_g3 <-as.data.frame(cbind(N_at_age3_g[[groups[3]]]$brood_yr,
+                                 N_at_age3_g[[groups[3]]]$age_3,
+                                 c(N_at_age4_g[[groups[3]]]$age_4,0),
+                                 c(N_at_age5_g[[groups[3]]]$age_5,0,0)))
+  colnames(N_at_g3) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5")
+}
+
+if(length(groups)>=4){
+  N_at_g4 <-as.data.frame(cbind(N_at_age3_g[[groups[4]]]$brood_yr,
+                                 N_at_age3_g[[groups[4]]]$age_3,
+                                 c(N_at_age4_g[[groups[4]]]$age_4,0),
+                                 c(N_at_age5_g[[groups[4]]]$age_5,0,0)))
+  colnames(N_at_g4) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5")
+}
+
+N_at_g1           <-cbind(N_at_g1,rep(groups[1],length(N_at_g1$brood_yr)))
+colnames(N_at_g1) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5","Stock")
+N_at              <-N_at_g1
+
+if(length(groups)>=2){N_at_g2 <-cbind(N_at_g2,rep(groups[2],length(N_at_g2$brood_yr)))
+colnames(N_at_g2) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5","Stock")
+N_at <-rbind(N_at,N_at_g2)}
+
+if(length(groups)>=3){N_at_g3 <-cbind(N_at_g3,rep(groups[3],length(N_at_g3$brood_yr)))
+colnames(N_at_g3) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5","Stock")
+N_at <-rbind(N_at,N_at_g3)}
+
+if(length(groups)>=4){N_at_g4 <-cbind(N_at_g4,rep(groups[4],length(N_at_g4$brood_yr)))
+colnames(N_at_g4) <-c("brood_yr","N_at_age3","N_at_age4","N_at_age5","Stock")
+N_at <-rbind(N_at,N_at_g4)}
+
+N_at[,"N_at_age3"] <-as.numeric(N_at[,"N_at_age3"])
+N_at[,"N_at_age4"] <-as.numeric(N_at[,"N_at_age4"])
+N_at[,"N_at_age5"] <-as.numeric(N_at[,"N_at_age5"])
+
+
+##### Plot N_at across stocks
+N_at_g1_long <-tidyr::gather(N_at_g1, Age_Class, N, N_at_age3,N_at_age4,N_at_age5)
+N_at_g <-N_at_g1_long
+
+if(length(groups)>=2){N_at_g2_long <-tidyr::gather(N_at_g2, Age_Class, N, N_at_age3,N_at_age4,N_at_age5)
+N_at_g <-rbind(N_at_g,N_at_g2_long)}
+
+if(length(groups)>=3){N_at_g3_long <-tidyr::gather(N_at_g3, Age_Class, N, N_at_age3,N_at_age4,N_at_age5)
+N_at_g <-rbind(N_at_g,N_at_g3_long)}
+
+if(length(groups)>=4){N_at_g4_long <-tidyr::gather(N_at_g4, Age_Class, N, N_at_age3,N_at_age4,N_at_age5)
+N_at_g <-rbind(N_at_g,N_at_g4_long)}
+
+N_at_g <-N_at_g[-which(N_at_g$Age_Class=="N_at_age4" & N_at_g$brood_yr==fore_yr-4),]
+N_at_g <-N_at_g[-which(N_at_g$Age_Class=="N_at_age5" & N_at_g$brood_yr>=fore_yr-5),]
+N_at_g[,"N"] <-as.numeric(N_at_g[,"N"])
+
+ggplot()+
+  geom_line(data=N_at_g,aes(x=brood_yr,y=N,group=Age_Class,color=Age_Class))+
+  facet_wrap(.~Stock,ncol=1,scales = "free")+
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+
+
+##### Print N_at table
+if(params$systems=="Puyallup River"){
+  N_at[,1:4] %>%
+    dplyr::filter(brood_yr>=(curr_yr-5)) %>%
+    kbl(row.names = FALSE, caption = "Table 3. Numbers-at-age over time for each stock.",digits=1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 3, "HOR" = 3))
+}
+
+if(params$systems=="White River"){
+  N_at[,1:4] %>%
+    dplyr::filter(brood_yr>=(curr_yr-5)) %>%
+    kbl(row.names = FALSE, caption = "Table 3. Numbers-at-age over time for each stock.", digits = 1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 3, "AP" = 3,"WRH_sub" = 3, "Hupp" = 3))
+}
+
+```  
+<br>
+<br>
+
+## Gather recruits-per-spawner data
+Forecasting escapement of ages 3-5 fish for next year requires the previously calculated estimate of ETRS from their respective brood years (age-3: fore_yr - 3, age-4: fore_yr-4, age-5: fore_yr-5) and a prediction of recruits-per-spawner for the year forecasted. These values are multiplied in order to get an estimate of age-specific forecasted escapement for next year. In order to predict rps for next year, we relate historical rps to a suite of explanatory variables (habitat, climate, sibling escapement) through a model fitting analysis and utilize model selection (AICc) to select which relationship to use for predicting rps. Here, we gather historical rps data calculated in the prior section to prepare for model fitting below.  
+
+* Calculate recruits-per-spawner (rps) for each age class, brood_yr, and stock
+  + NOR rps = N_at/TotalNaturalSpawners_t
+  + HOR rps = N_at/TotalHatcheryReleases_t
+`r if(params$systems=="White River"){"  + AP rps = N_at/TotalAP_t"}`
+`r if(params$systems=="White River"){"  + Hupp rps = N_at/TotalHuppReleased_t"}`
+
+``` {r rps_at, fig.cap = "**Figure 3.** Recruits-per-spawner (rps) over time for each stock.", fig.topcaption = TRUE, fig.height=7, fig.width=8}
+#####
+rps_list  <-list()
+
+for(g in 1:length(groups)){
+  rps_df <-data.frame(
+    brood_yr  = N_at_age3_g[[g]][["brood_yr"]],
+    age3 = N_at_age3_g[[g]][["age3_rps"]],
+    age4 = c(N_at_age4_g[[g]][["age4_rps"]],rep(0,1)),
+    age5 = c(N_at_age5_g[[g]][["age5_rps"]],rep(0,2)),
+    total_rps = N_at_age3_g[[g]][["age3_rps"]] + c(N_at_age4_g[[g]][["age4_rps"]],rep(0,1)) + c(N_at_age5_g[[g]][["age5_rps"]],rep(0,2)))
+  
+  if(groups[g]=="NOR"){    rps_list[[g]] <-rps_df}
+  if(groups[g]=="AP"){     rps_list[[g]] <-rps_df}
+  if(groups[g]=="WRH_sub"){rps_list[[g]] <-rps_df}
+  if(groups[g]=="Hupp"){   rps_list[[g]] <-rps_df}
+  if(groups[g]=="HOR"){    rps_list[[g]] <-rps_df}
+}
+names(rps_list)  <-groups
+
+rps_df_g1           <-cbind(rps_list[[1]],rep(groups[1],length(rps_list[[1]]$brood_yr)))
+colnames(rps_df_g1) <-c(colnames(rps_df_g1)[-6],"Stock")
+if(length(groups)>=1){
+  rps_df_g           <-rps_df_g1
+  colnames(rps_df_g) <-c(colnames(rps_df_g1)[-6],"Stock")
+}
+if(length(groups)>=2){
+  rps_df_g2           <-cbind(rps_list[[2]],rep(groups[2],length(rps_list[[2]]$brood_yr)))
+  colnames(rps_df_g2) <-c(colnames(rps_df_g2)[-6],"Stock")
+  rps_df_g            <-rbind(rps_df_g1,rps_df_g2)
+}
+if(length(groups)>=3){
+  rps_df_g3           <-cbind(rps_list[[3]],rep(groups[3],length(rps_list[[3]]$brood_yr)))
+  colnames(rps_df_g3) <-c(colnames(rps_df_g3)[-6],"Stock")
+  rps_df_g            <-rbind(rps_df_g,rps_df_g3)
+}
+if(length(groups)>=4){
+  rps_df_g4           <-cbind(rps_list[[4]],rep(groups[4],length(rps_list[[4]]$brood_yr)))
+  colnames(rps_df_g4) <-c(colnames(rps_df_g4)[-6],"Stock")
+  rps_df_g            <-rbind(rps_df_g,rps_df_g4)
+}
+
+# write.csv(rps_df_g,paste0(drive_syst,curr_yr,"_Escapement/",curr_yr,"_Outputs/rps_df.csv"),row.names=FALSE)
+
+##### Plot rps by age-class & stock
+rps_g_long <-tidyr::gather(rps_df_g, Age_Class, rps, age3,age4,age5,total_rps)
+rps_temp   <-rps_g_long[-which(rps_g_long$Age_Class=="age5" & rps_g_long$brood_yr>=(fore_yr-5)),]
+rps_ts     <-rps_temp[-which(rps_temp$Age_Class=="age4" & rps_temp$brood_yr>=(fore_yr-4)),]
+
+
+ggplot()+
+  geom_line(data=rps_ts,aes(x=brood_yr,y=rps,group=Age_Class,color=Age_Class))+
+  facet_wrap(Stock~.,ncol=1,scales="free")+
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+
+##### Print rps table
+if(params$systems=="Puyallup River"){
+  rps_df_g[,1:5] %>%
+    dplyr::filter(brood_yr>=(curr_yr-5)) %>%
+    kbl(row.names = FALSE, caption = "Table 4. Recruits-per-spawner calculated for ages 3-5 over time.", digits = 3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 3, "HOR" = 3))
+}
+
+if(params$systems=="White River"){
+  rps_df_g[,1:5] %>%
+    dplyr::filter(brood_yr>=(curr_yr-5)) %>%
+    kbl(row.names = FALSE, caption = "Table 4. Recruits-per-spawner calculated for ages 3-5 over time.", digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 3, "AP" = 3, "WRH_sub" = 3, "Hupp" = 3))
+}
+
+```
+<br>
+<br>
+
+## Gather smolt-adult return data
+Forecasting escapement of ages 3-5 fish for next year using the SAR method requires historical records of smolt abundance from their respective brood years (age-3: fore_yr - 3, age-4: fore_yr-4, age-5: fore_yr-5) and a prediction of smolt-adult return (i.e., recruits-per-smolt) for the year forecasted. These values are multiplied in order to get an estimate of age-specific forecasted escapement for next year. In order to predict SAR for next year, we relate historical SAR to a suite of explanatory variables (e.g., habitat, climate, sibling SAR) through a model fitting analysis and utilize model selection (AICc) to select which relationship to use for predicting SAR. Here, we gather historical SAR data calculated in the prior section to prepare for model fitting below.  
+
+* Calculate smolt-adult return (SAR) for each NOR age class and brood_yr
+  + NOR SAR = N_at/SmoltAbundance_t
+
+``` {r sar_at, fig.cap = "**Figure 3.** Smolt-adult return (SAR) over time for the NOR stock.", fig.topcaption = TRUE, fig.height=3, fig.width=6}
+#####
+# Read in smolt data
+smolt <-read.csv(paste0(drive_syst_fore,"/smolt_trap_data.csv"))
+
+sar_list <-list()
+
+for(g in 1:length(groups)){
+  if(params$systems=="White River"&groups[g]=="NOR"){
+    sar_df <-data.frame(
+      brood_yr = dplyr::filter(smolt, brood_yr <= curr_yr-2)$brood_yr,
+      age2_sar = as.numeric(dplyr::filter(N_at_age2_g[[g]], brood_yr >= min(smolt$brood_yr) & brood_yr <= curr_yr-2)$age_2)/
+                            dplyr::filter(smolt, brood_yr <= curr_yr-2)$smolt,
+      age3_sar = c(as.numeric(dplyr::filter(N_at_age3_g[[g]], brood_yr >= min(smolt$brood_yr) & brood_yr <= curr_yr-3)$age_3)/
+                            dplyr::filter(smolt, brood_yr <= curr_yr-3)$smolt,rep(0,1)),
+      age4_sar = c(as.numeric(dplyr::filter(N_at_age4_g[[g]], brood_yr >= min(smolt$brood_yr) & brood_yr <= curr_yr-4)$age_4)/
+                            dplyr::filter(smolt, brood_yr <= curr_yr-4)$smolt,rep(0,2)),
+      age5_sar = c(as.numeric(dplyr::filter(N_at_age5_g[[g]], brood_yr >= min(smolt$brood_yr) & brood_yr <= curr_yr-5)$age_5)/
+                            dplyr::filter(smolt, brood_yr <= curr_yr-5)$smolt,rep(0,3))
+      )
+  }
+  if(params$systems=="Puyallup River"&groups[g]=="NOR"){
+    sar_df <-data.frame(
+      brood_yr = dplyr::filter(smolt, brood_yr <= curr_yr-2)$brood_yr,
+      age2_sar = rep(0,length(dplyr::filter(smolt, brood_yr <= curr_yr-2)$brood_yr)),
+      age3_sar = c(as.numeric(dplyr::filter(N_at_age3_g[[g]], brood_yr >= min(smolt$brood_yr) & brood_yr <= curr_yr-3)$age_3)/
+                            dplyr::filter(smolt, brood_yr <= curr_yr-3)$smolt,rep(0,1)),
+      age4_sar = c(as.numeric(dplyr::filter(N_at_age4_g[[g]], brood_yr >= min(smolt$brood_yr) & brood_yr <= curr_yr-4)$age_4)/
+                            dplyr::filter(smolt, brood_yr <= curr_yr-4)$smolt,rep(0,2)),
+      age5_sar = c(as.numeric(dplyr::filter(N_at_age5_g[[g]], brood_yr >= min(smolt$brood_yr) & brood_yr <= curr_yr-5)$age_5)/
+                            dplyr::filter(smolt, brood_yr <= curr_yr-5)$smolt,rep(0,3))
+      )
+  }
+
+  if(groups[g]=="NOR"){    sar_list[[g]] <-sar_df}
+}
+names(sar_list)  <-groups[1]
+
+sar_df_g1           <-cbind(sar_list[[1]],rep(groups[1],length(sar_list[[1]]$brood_yr)))
+colnames(sar_df_g1) <-c(colnames(sar_df_g1)[-6],"Stock")
+if(length(groups)>=1){
+  sar_df_g           <-sar_df_g1
+  colnames(sar_df_g) <-c(colnames(sar_df_g1)[-6],"Stock")
+}
+
+##### Plot rps by age-class & stock
+sar_g_long <-tidyr::gather(sar_df_g, Age_Class, sar, age3_sar,age4_sar,age5_sar)
+# sar_temp   <-sar_g_long[-which(sar_g_long$Age_Class=="age5" & sar_g_long$brood_yr>=(fore_yr-5)),]
+# sar_ts     <-sar_temp[-which(sar_temp$Age_Class=="age4" & sar_temp$brood_yr>=(fore_yr-4)),]
+
+ggplot()+
+  geom_line(data=sar_g_long,aes(x=brood_yr,y=sar,group=Age_Class,color=Age_Class))+
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+
+##### Print SAR table
+if(params$systems=="Puyallup River"){
+  sar_df_g[,c(1,3,4,5)] %>%
+    dplyr::filter(brood_yr>=(curr_yr-5) & brood_yr<=curr_yr-3) %>%
+    kbl(row.names = FALSE, caption = "Table 4. Smolt-adult return calculated for ages 3-5 over time.", digits = 3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 3))
+}
+
+if(params$systems=="White River"){
+  sar_df_g[,c(1,3,4,5)] %>%
+    dplyr::filter(brood_yr>=(curr_yr-5) & brood_yr<=curr_yr-3) %>%
+    kbl(row.names = FALSE, caption = "Table 4. Smolt-adult return calculated for ages 3-5 over time.", digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 3))
+}
+
+```
+<br>
+<br>
+
+## Fit forecast models
+
+Estimated terminal run size is forecast using a suite of linear models that are fit to age-specific survival data for ages 3-5 (response variable) and habitat or sibling survival data (explanatory variables).  
+
+* Candidate forecast models
+  `r if(params$systems=="White River"){"  + Sibling: age-3 rps ~ age-2 rps"}`
+  `r if(params$systems=="Puyallup River"){"  + Sibling: age-3 rps ~ age-2 rps [HOR only]"}`
+  + Sibling: age-4 rps ~ age-3 rps
+  + Sibling: age-5 rps ~ age-4 rps
+ `r if(params$systems=="White River"){"  + Smolt-to-Adualt Return (SAR) age-3 ~ age-2"}`
+ `r if(params$systems=="Puyallup River"){"  + Smolt-to-Adualt Return (SAR) age-3 ~ age-2 [HOR only]"}`
+  + Smolt-to-Adualt Return (SAR) age-4 ~ age-3
+  + Smolt-to-Adualt Return (SAR) age-5 ~ age-4
+ `r if(params$systems=="White River"){"  + NORrps ~ TotalChinookPassed [NOR only]"}`
+  + Climate: 17 covariates X 3 age-classes (ages 3-5) X 2 survival metrics (rps & SAR)
+    * NPGO: sum Jan-Mar, sum May-Sept, and annual mean indices
+    * PDO: sum Jan-Mar, sum May-Sept, and annual mean indices
+    * Deep Temperature (May-Sept)
+    * Copepod richness: northern, southern, all (May-Sept anomaly)
+    * Biological transition
+    * Nearshore ichthyoplankton comminuty index (Jan-Mar)
+    * Nearshore/offshore ichthyoplankton community index (Jan-Mar)
+    * Sea surface temeprature (Race Rocks)
+    * Sea surface salinity (Race Rocks) 
+    * Oceanic Nino Index (mean Jan-June)
+    * Aleutian low-Beaufort Sea Anticyclone
+
+    
+``` {r fit_models, warning = FALSE}
+fits <-list()
+
+for(g in 1:length(groups)){
+  fits_g <-list()
+  ############################################################################## 
+  ################################# SAR Models #################################
+  if(groups[g]=="NOR"){
+      if(params$systems=="White River"){
+        #################################
+        #### SAR: age-3 rps ~ smolt
+        # Gather data
+        SAR_age3_age2           <-dplyr::filter(sar_df_g, Stock==groups[g])[,c("age3_sar","age2_sar")]
+      
+        # Get rid of other -Infs
+        SAR_age3_age2[is.na(SAR_age3_age2) | SAR_age3_age2=="-Inf"] = NA
+        SAR_age3_age2[is.na(SAR_age3_age2) | SAR_age3_age2=="Inf"] = NA
+      
+        # Fit models
+        sar23_lin <-lm(age3_sar~age2_sar,data=SAR_age3_age2) # Linear
+      }
+    
+      ##################################
+      ##### SAR: age-4 ~ age-3
+      # Gather data
+      SAR_age4_age3           <-dplyr::filter(sar_df_g, Stock==groups[g])[,c("age4_sar","age3_sar")]
+    
+      # Get rid of other -Infs
+      SAR_age4_age3[is.na(SAR_age4_age3) | SAR_age4_age3=="-Inf"] = NA
+      SAR_age4_age3[is.na(SAR_age4_age3) | SAR_age4_age3=="Inf"] = NA
+      
+      # Fit models
+      sar34_lin <-lm(age4_sar~age3_sar,data=SAR_age4_age3) # Linear
+    
+      ##################################
+      ##### SAR: age-5 ~ age-4
+      # Gather data
+      SAR_age5_age4           <-dplyr::filter(sar_df_g, Stock==groups[g])[,c("age5_sar","age4_sar")]
+    
+      # Get rid of other -Infs
+      SAR_age5_age4[is.na(SAR_age5_age4) | SAR_age5_age4=="-Inf"] = NA
+      SAR_age5_age4[is.na(SAR_age5_age4) | SAR_age5_age4=="Inf"] = NA
+      
+      # Fit models
+      sar45_lin <-lm(age5_sar~age4_sar,data=SAR_age5_age4) # Linear
+    
+      ### Output sar dfs
+      # SAR_age3$age_class <-rep("age3", nrow(SAR_age3))
+      # SAR_age4$age_class <-rep("age4", nrow(SAR_age4))
+      # SAR_age5$age_class <-rep("age5", nrow(SAR_age5))
+      # SAR_df<-rbind(SAR_age3,SAR_age4,SAR_age5)
+      # write.csv(SAR_df,paste0(drive_syst_fore,"/SAR_df_white.csv"))
+      
+      ################################################
+      ##### Survival~climate predictors for all groups
+      # Set system-age_class IDs for sar~clim models
+      if(params$systems=="Puyallup River"){
+        if(groups[g]=="NOR"){sar_syst_id <-c("PUY.NOR.3","PUY.NOR.4")}
+      }
+      if(params$systems=="White River"){
+        if(groups[g]=="NOR"){sar_syst_id <-c("WR.NOR.3","WR.NOR.4")}
+      }
+    
+      # Trim df to appropriate yrs
+      surv_hab_trim  <-dplyr::filter(surv_hab,brood_yr<=fore_yr-4)
+    
+      # Merge rps & covariates
+      surv_hab_merge <-cbind(dplyr::filter(surv_hab_trim, brood_yr>=min(sar_df_g$brood_yr)),
+                             dplyr::filter(sar_df_g,brood_yr>=min(surv_hab_trim$brood_yr) &
+                                               brood_yr<=max(surv_hab_trim$brood_yr))$age3_sar,
+                             c(dplyr::filter(sar_df_g,brood_yr>=min(surv_hab_trim$brood_yr) &
+                                               brood_yr<=max(surv_hab_trim$brood_yr))$age4_sar))
+      colnames(surv_hab_merge)[ncol(surv_hab_merge)-1] <-sar_syst_id[1]
+      colnames(surv_hab_merge)[ncol(surv_hab_merge)]   <-sar_syst_id[2]
+      
+      cov <-colnames(surv_hab)[-c(1,2)]
+      # cov <-c("PDOJM","PDOMS","NPGOJM","NPGOMS","DTMS","COPE","NCOPE","SCOPE","BIOTRAN","ICHTHY","OSICHTHY","PC1")#,"UPWELL")
+    
+      ##### Fit models
+      # Age-3
+      clim_age3_c   <-list()
+      sar_clim_age3 <-list()
+      for(c in 1:length(cov)){
+        dat                <-as.data.frame(cbind(dplyr::filter(sar_df_g, Stock=="NOR" & brood_yr <= curr_yr-3)[,c("age3_sar")],
+                                                 surv_hab_merge[which(surv_hab_merge$brood_yr>=min(sar_df_g$brood_yr)),cov[c]]))
+        colnames(dat)      <-c("sar","cov")
+        clim3_lin          <-lm(sar~cov,data=dat) # Linear
+        clim_age3_c[[1]]   <-clim3_lin
+        names(clim_age3_c) <-c("linear")
+        sar_clim_age3[[c]] <-clim_age3_c
+      }
+      names(sar_clim_age3) <-cov
+      
+      # Age-4
+      clim_age4_c   <-list()
+      sar_clim_age4 <-list()
+      for(c in 1:length(cov)){
+        dat                <-as.data.frame(cbind(dplyr::filter(sar_df_g, Stock=="NOR" & brood_yr <= curr_yr-4)[,c("age4_sar")],
+                                                 surv_hab_merge[which(surv_hab_merge$brood_yr>=min(sar_df_g$brood_yr)),cov[c]]))
+        colnames(dat)      <-c("sar","cov")
+        clim4_lin          <-lm(sar~cov,data=dat) # Linear
+        clim_age4_c[[1]]   <-clim4_lin
+        names(clim_age4_c) <-c("linear")
+        sar_clim_age4[[c]] <-clim_age4_c
+      }
+      names(sar_clim_age4) <-cov
+      
+      # Age-5
+      clim_age5_c   <-list()
+      sar_clim_age5 <-list()
+      for(c in 1:length(cov)){
+        dat                <-as.data.frame(cbind(dplyr::filter(sar_df_g, Stock=="NOR" & brood_yr <= curr_yr-5)[,c("age3_sar")],
+                                                 surv_hab_merge[which(surv_hab_merge$brood_yr>=min(sar_df_g$brood_yr)),cov[c]]))
+        colnames(dat)      <-c("sar","cov")
+        clim5_lin          <-lm(sar~cov,data=dat) # Linear
+        clim_age5_c[[1]]   <-clim5_lin
+        names(clim_age5_c) <-c("linear")
+        sar_clim_age5[[c]] <-clim_age5_c
+      }
+      names(sar_clim_age5) <-cov
+  }
+  
+  ############################################################################## 
+  ################################# RPS Models #################################
+  ##### Sibling: age-3 rps ~ age-2 rps
+  # Set start yr for each system
+  if(params$systems=="White River" | params$systems=="Puyallup River"&groups[g]=="HOR"){
+    if(params$systems=="White River"){  
+      if(groups[g]=="NOR"){    sib_start <-1999}
+      if(groups[g]=="AP"){     sib_start <-1998}
+      if(groups[g]=="WRH_sub"){sib_start <-2003}
+      if(groups[g]=="Hupp"){   sib_start <-2002}
+    }
+    if(params$systems=="Puyallup River"){sib_start <-2002}
+    
+    # Gather data
+    sib_age3_age2           <-as.data.frame(cbind(dplyr::filter(N_at_age3_g[[g]],brood_yr>=sib_start &
+                                                                  brood_yr<=max(N_at_age3_g[[g]]$brood_yr))$age3_rps,
+                                                  dplyr::filter(N_at_age2_g[[g]],brood_yr>=sib_start &
+                                                                  brood_yr<=max(N_at_age3_g[[g]]$brood_yr))$age2_rps))
+    colnames(sib_age3_age2) <-c("age3_rps","age2_rps")
+    
+    # Get rid of other -Infs
+    sib_age3_age2[is.na(sib_age3_age2) | sib_age3_age2=="-Inf"] = NA
+    sib_age3_age2[is.na(sib_age3_age2) | sib_age3_age2=="Inf"] = NA
+    
+    # Fit models
+    sib23_lin <-lm(age3_rps~age2_rps,data=sib_age3_age2) # Linear
+  }
+  ##################################
+  ##### Sibling: age-4 rps ~ age-3 rps
+  # Set start yr for each system
+  if(params$systems=="White River"){
+    if(groups[g]=="NOR"){    sib_start <-1999}
+    if(groups[g]=="AP"){     sib_start <-1998}
+    if(groups[g]=="WRH_sub"){sib_start <-1998}
+    if(groups[g]=="Hupp"){   sib_start <-2002}
+  }
+  if(params$systems=="Puyallup River"){
+    if(groups[g]=="NOR"){    sib_start <-1999}
+    if(groups[g]=="HOR"){    sib_start <-1999}
+  }
+
+  # Gather data
+  sib_age4_age3           <-as.data.frame(cbind(dplyr::filter(N_at_age4_g[[g]],brood_yr>=sib_start & 
+                                                                brood_yr<=max(N_at_age4_g[[g]]$brood_yr))$age4_rps,
+                                                dplyr::filter(N_at_age3_g[[g]],brood_yr>=sib_start & 
+                                                                brood_yr<=max(N_at_age4_g[[g]]$brood_yr))$age3_rps))
+  colnames(sib_age4_age3) <-c("age4_rps","age3_rps")
+
+  # Fit models
+  sib34_lin <-lm(age4_rps~age3_rps,data=sib_age4_age3) # Linear
+
+  ##################################
+  ##### Sibling: age-5 rps ~ age-4 rps
+  # Set start yr for each system
+  if(params$systems=="White River"){
+    if(groups[g]=="NOR"){    sib_start <-1998}
+    if(groups[g]=="AP"){     sib_start <-1998}
+    if(groups[g]=="WRH_sub"){sib_start <-1998}
+    if(groups[g]=="Hupp"){   sib_start <-2002}}
+  if(params$systems=="Puyallup River"){
+    if(groups[g]=="NOR"){    sib_start <-1999}
+    if(groups[g]=="HOR"){    sib_start <-1999}
+  }
+
+  # Gather data
+  sib_age5_age4           <-as.data.frame(cbind(dplyr::filter(N_at_age5_g[[g]],brood_yr>=sib_start & 
+                                                                brood_yr<=max(N_at_age5_g[[g]]$brood_yr))$age5_rps,
+                                                dplyr::filter(N_at_age4_g[[g]],brood_yr>=sib_start & 
+                                                                brood_yr<=max(N_at_age5_g[[g]]$brood_yr))$age4_rps))
+  colnames(sib_age5_age4) <-c("age5_rps","age4_rps")
+  
+  # Fit models
+  sib45_lin <-lm(age5_rps~age4_rps,data=sib_age5_age4) # Linear
+
+  #########################################
+  ##### NORrps ~ TotalChinookPassed for NOR
+  if(params$systems=="White River" & groups[g]=="NOR"){
+    # Set yrs for inclusion
+    start_yr <-1998;end_yr <-2017
+    
+    # Gather data
+    rps                          <-cbind(dplyr::filter(N_at_age3_g[[g]],brood_yr>=start_yr & brood_yr<=end_yr)$age3_rps,
+                                         dplyr::filter(N_at_age4_g[[g]],brood_yr>=start_yr & brood_yr<=end_yr)$age4_rps,
+                                         dplyr::filter(N_at_age5_g[[g]],brood_yr>=start_yr & brood_yr<=end_yr)$age5_rps)
+    NOR_rps_adult                <-rowSums(rps)
+    total_passed                 <-dplyr::filter(run_recon,return_yr>=1998 & return_yr<=2017)$Total_passed
+    NORrps_totalpassed           <-as.data.frame(cbind(NOR_rps_adult,total_passed))
+    colnames(NORrps_totalpassed) <-c("NOR_rps_adult",'total_passed')
+    
+    # Fit models
+    RPSpassed_lin <-lm(NOR_rps_adult~total_passed,data=NORrps_totalpassed) # Linear
+  }
+
+  ################################################
+  ##### Survival~climate predictors for all groups
+  # Set system-age_class IDs for rps~clim models
+  if(params$systems=="Puyallup River"){
+    if(groups[g]=="NOR"){rps_syst_id <-c("PUY.NOR.3","PUY.NOR.4")}
+    if(groups[g]=="HOR"){rps_syst_id <-c("PUY.HOR.3","PUY.HOR.4")}
+  }
+  if(params$systems=="White River"){
+    if(groups[g]=="NOR"){    rps_syst_id <-c("WR.NOR.3","WR.NOR.4")}
+    if(groups[g]=="Hupp"){   rps_syst_id <-c("HUPP.3","HUPP.4")}
+    if(groups[g]=="AP"){     rps_syst_id <-c("ACCL.3","ACCL.4")}
+    if(groups[g]=="WRH_sub"){rps_syst_id <-c("WR.HOR.3_SY","WR.HOR.4_SY")}
+  }
+
+  # Trim df to appropriate yrs
+  surv_hab_trim  <-dplyr::filter(surv_hab,brood_yr<=fore_yr-4)
+
+  # Merge rps & covariates
+  surv_hab_merge <-cbind(surv_hab_trim,
+                         dplyr::filter(N_at_age3_g[[g]],brood_yr>=min(surv_hab_trim$brood_yr) &
+                                           brood_yr<=max(surv_hab_trim$brood_yr))$age3_rps,
+                         c(dplyr::filter(N_at_age4_g[[g]],brood_yr>=min(surv_hab_trim$brood_yr) &
+                                           brood_yr<=max(surv_hab_trim$brood_yr))$age4_rps,NA))
+  colnames(surv_hab_merge)[ncol(surv_hab_merge)-1] <-rps_syst_id[1]
+  colnames(surv_hab_merge)[ncol(surv_hab_merge)]   <-rps_syst_id[2]
+  
+  cov <-colnames(surv_hab)[-c(1,2)]
+  # cov <-c("PDOJM","PDOMS","NPGOJM","NPGOMS","DTMS","COPE","NCOPE","SCOPE","BIOTRAN","ICHTHY","OSICHTHY","PC1")#,"UPWELL")
+
+  ##### Fit models
+  # Age-3
+  clim_age3_c <-list()
+  clim_age3   <-list()
+  for(c in 1:length(cov)){
+    dat <-as.data.frame(cbind(surv_hab_merge[,rps_syst_id[1]],surv_hab_merge[,cov[c]]))
+    colnames(dat) <-c("rps","cov")
+    
+    clim3_lin <-lm(rps~cov,data=dat) # Linear
+    clim_age3_c[[1]] <-clim3_lin
+    names(clim_age3_c) <-c("linear")
+    clim_age3[[c]] <-clim_age3_c
+  }
+  names(clim_age3) <-cov
+  
+  # Age-4
+  clim_age4_c <-list()
+  clim_age4   <-list()
+  for(c in 1:length(cov)){
+    dat <-as.data.frame(cbind(surv_hab_merge[,rps_syst_id[2]],surv_hab_merge[,cov[c]]))
+    colnames(dat) <-c("rps","cov")
+    
+    clim4_lin <-lm(rps~cov,data=dat) # Linear
+    clim_age4_c[[1]] <-clim4_lin
+    names(clim_age4_c) <-c("linear")
+    clim_age4[[c]] <-clim_age4_c
+  }
+  names(clim_age4) <-cov
+  
+  # Age-5
+  clim_age5_c <-list()
+  clim_age5 <-list()
+  for(c in 1:length(cov)){
+    dat <-as.data.frame(cbind(surv_hab_merge[,rps_syst_id[2]],surv_hab_merge[,cov[c]]))
+    colnames(dat) <-c("rps","cov")
+    
+    clim5_lin          <-lm(rps~cov,data=dat) # Linear
+    clim_age5_c[[1]]   <-clim5_lin
+    names(clim_age5_c) <-c("linear")
+    clim_age5[[c]]     <-clim_age5_c
+  }
+  names(clim_age5) <-cov
+  
+  ##############################################################################
+  ##### Save fits to lists
+  if(params$systems=="White River"&groups[g]=="NOR"){
+    SAR23        <-list()
+    SAR23[[1]]   <-sar23_lin
+    names(SAR23) <-c("linear")
+  }
+
+  SAR34        <-list()
+  SAR34[[1]]   <-sar34_lin
+  names(SAR34) <-c("linear")
+
+  SAR45        <-list()
+  SAR45[[1]]   <-sar45_lin
+  names(SAR45) <-c("linear")
+  
+  if(params$systems=="White River" | params$systems=="Puyallup River"&groups[g]=="HOR"){
+    sib23        <-list()
+    sib23[[1]]   <-sib23_lin
+    names(sib23) <-c("linear")
+  }
+  
+  sib34        <-list()
+  sib34[[1]]   <-sib34_lin
+  names(sib34) <-c("linear")
+
+  sib45        <-list()
+  sib45[[1]]   <-sib45_lin
+  names(sib45) <-c("linear")
+
+  fits_age3_g <-list()
+  fits_age4_g <-list()
+  fits_age5_g <-list()
+  
+  ### Age-3 fits
+  fits_age3_g[[1]] <-clim_age3[[1]]
+  fits_age3_g[[2]] <-clim_age3[[2]]  
+  fits_age3_g[[3]] <-clim_age3[[3]]
+  fits_age3_g[[4]] <-clim_age3[[4]]
+  fits_age3_g[[5]] <-clim_age3[[5]]
+  fits_age3_g[[6]] <-clim_age3[[6]]
+  fits_age3_g[[7]] <-clim_age3[[7]]
+  fits_age3_g[[8]] <-clim_age3[[8]]
+  fits_age3_g[[9]] <-clim_age3[[9]]
+  fits_age3_g[[10]] <-clim_age3[[10]]
+  fits_age3_g[[11]] <-clim_age3[[11]]
+  fits_age3_g[[12]] <-clim_age3[[12]]
+  fits_age3_g[[13]] <-clim_age3[[13]]
+  fits_age3_g[[14]] <-clim_age3[[14]]
+  fits_age3_g[[15]] <-clim_age3[[15]]
+  # fits_age3_g[[16]] <-clim_age3[[16]]
+  # fits_age3_g[[17]] <-clim_age3[[17]]
+  if(params$systems=="White River" | params$systems=="Puyallup River"&groups[g]=="HOR"){
+    fits_age3_g[[16]]  <-sib23
+  }
+  if(params$systems=="White River"&groups[g]=="NOR"){
+    fits_age3_g[[17]] <-sar_clim_age3[[1]]
+    fits_age3_g[[18]] <-sar_clim_age3[[2]]  
+    fits_age3_g[[19]] <-sar_clim_age3[[3]]
+    fits_age3_g[[20]] <-sar_clim_age3[[4]]
+    fits_age3_g[[21]] <-sar_clim_age3[[5]]
+    fits_age3_g[[22]] <-sar_clim_age3[[6]]
+    fits_age3_g[[23]] <-sar_clim_age3[[7]]
+    fits_age3_g[[24]] <-sar_clim_age3[[8]]
+    fits_age3_g[[25]] <-sar_clim_age3[[9]]
+    fits_age3_g[[26]] <-sar_clim_age3[[10]]
+    fits_age3_g[[27]] <-sar_clim_age3[[11]]
+    fits_age3_g[[28]] <-sar_clim_age3[[12]]
+    fits_age3_g[[29]] <-sar_clim_age3[[13]]
+    fits_age3_g[[30]] <-sar_clim_age3[[14]]
+    fits_age3_g[[31]] <-sar_clim_age3[[15]]
+    # fits_age3_g[[32]] <-sar_clim_age3[[16]]
+    # fits_age3_g[[33]] <-sar_clim_age3[[17]]
+    fits_age3_g[[32]] <-SAR23
+  }
+  if(params$systems=="Puyallup River"&groups[g]=="NOR"){
+    fits_age3_g[[16]] <-sar_clim_age3[[1]]
+    fits_age3_g[[17]] <-sar_clim_age3[[2]]  
+    fits_age3_g[[18]] <-sar_clim_age3[[3]]
+    fits_age3_g[[19]] <-sar_clim_age3[[4]]
+    fits_age3_g[[20]] <-sar_clim_age3[[5]]
+    fits_age3_g[[21]] <-sar_clim_age3[[6]]
+    fits_age3_g[[22]] <-sar_clim_age3[[7]]
+    fits_age3_g[[23]] <-sar_clim_age3[[8]]
+    fits_age3_g[[24]] <-sar_clim_age3[[9]]
+    fits_age3_g[[25]] <-sar_clim_age3[[10]]
+    fits_age3_g[[26]] <-sar_clim_age3[[11]]
+    fits_age3_g[[27]] <-sar_clim_age3[[12]]
+    fits_age3_g[[28]] <-sar_clim_age3[[13]]
+    fits_age3_g[[29]] <-sar_clim_age3[[14]]
+    fits_age3_g[[30]] <-sar_clim_age3[[15]]
+    # fits_age3_g[[33]] <-sar_clim_age3[[16]]
+    # fits_age3_g[[34]] <-sar_clim_age3[[17]]
+  }
+
+  if(params$systems=="Puyallup River"&groups[g]=="NOR"){names(fits_age3_g) <-c(paste0("rps~",cov),paste0("sar~",cov))}
+  if(params$systems=="White River"&groups[g]!="NOR" | params$systems=="Puyallup River"&groups[g]=="HOR"){names(fits_age3_g) <-c(paste0("rps~",cov),"sib23")}
+  if(params$systems=="White River"&groups[g]=="NOR"){names(fits_age3_g) <-c(paste0("rps~",cov),"sib23",paste0("sar~",cov),"SAR23")}
+  
+  ### Age-4 fits 
+  fits_age4_g[[1]] <-clim_age4[[1]]
+  fits_age4_g[[2]] <-clim_age4[[2]]  
+  fits_age4_g[[3]] <-clim_age4[[3]]
+  fits_age4_g[[4]] <-clim_age4[[4]]
+  fits_age4_g[[5]] <-clim_age4[[5]]
+  fits_age4_g[[6]] <-clim_age4[[6]]
+  fits_age4_g[[7]] <-clim_age4[[7]]
+  fits_age4_g[[8]] <-clim_age4[[8]]
+  fits_age4_g[[9]] <-clim_age4[[9]]
+  fits_age4_g[[10]] <-clim_age4[[10]]
+  fits_age4_g[[11]] <-clim_age4[[11]]
+  fits_age4_g[[12]] <-clim_age4[[12]]
+  fits_age4_g[[13]] <-clim_age4[[13]]
+  fits_age4_g[[14]] <-clim_age4[[14]]
+  fits_age4_g[[15]] <-clim_age4[[15]]
+  # fits_age4_g[[16]] <-clim_age4[[16]]
+  # fits_age4_g[[17]] <-clim_age4[[17]]
+  fits_age4_g[[16]]  <-sib34
+  if(groups[g]=="NOR"){
+    fits_age4_g[[17]] <-sar_clim_age4[[1]]
+    fits_age4_g[[18]] <-sar_clim_age4[[2]]  
+    fits_age4_g[[19]] <-sar_clim_age4[[3]]
+    fits_age4_g[[20]] <-sar_clim_age4[[4]]
+    fits_age4_g[[21]] <-sar_clim_age4[[5]]
+    fits_age4_g[[22]] <-sar_clim_age4[[6]]
+    fits_age4_g[[23]] <-sar_clim_age4[[7]]
+    fits_age4_g[[24]] <-sar_clim_age4[[8]]
+    fits_age4_g[[25]] <-sar_clim_age4[[9]]
+    fits_age4_g[[26]] <-sar_clim_age4[[10]]
+    fits_age4_g[[27]] <-sar_clim_age4[[11]]
+    fits_age4_g[[28]] <-sar_clim_age4[[12]]
+    fits_age4_g[[29]] <-sar_clim_age4[[13]]
+    fits_age4_g[[30]] <-sar_clim_age4[[14]]
+    fits_age4_g[[31]] <-sar_clim_age4[[15]]
+    # fits_age4_g[[32]] <-sar_clim_age4[[16]]
+    # fits_age4_g[[33]] <-sar_clim_age4[[17]]
+    fits_age4_g[[32]]  <-SAR34
+  }
+  
+  if(groups[g]!="NOR"){names(fits_age4_g) <-c(paste0("rps~",cov),"sib34")}
+  if(groups[g]=="NOR"){names(fits_age4_g) <-c(paste0("rps~",cov),"sib34",paste0("sar~",cov),"SAR34")}
+
+  ### Age-5 fits  
+  fits_age5_g[[1]] <-clim_age5[[1]]
+  fits_age5_g[[2]] <-clim_age5[[2]]  
+  fits_age5_g[[3]] <-clim_age5[[3]]
+  fits_age5_g[[4]] <-clim_age5[[4]]
+  fits_age5_g[[5]] <-clim_age5[[5]]
+  fits_age5_g[[6]] <-clim_age5[[6]]
+  fits_age5_g[[7]] <-clim_age5[[7]]
+  fits_age5_g[[8]] <-clim_age5[[8]]
+  fits_age5_g[[9]] <-clim_age5[[9]]
+  fits_age5_g[[10]] <-clim_age5[[10]]
+  fits_age5_g[[11]] <-clim_age5[[11]]
+  fits_age5_g[[12]] <-clim_age5[[12]]
+  fits_age5_g[[13]] <-clim_age5[[13]]
+  fits_age5_g[[14]] <-clim_age5[[14]]
+  fits_age5_g[[15]] <-clim_age5[[15]]
+  # fits_age5_g[[16]] <-clim_age5[[16]]
+  # fits_age5_g[[17]] <-clim_age5[[17]]
+  fits_age5_g[[16]]  <-sib45
+  if(groups[g]=="NOR"){
+    fits_age5_g[[17]] <-sar_clim_age5[[1]]
+    fits_age5_g[[18]] <-sar_clim_age5[[2]]  
+    fits_age5_g[[19]] <-sar_clim_age5[[3]]
+    fits_age5_g[[20]] <-sar_clim_age5[[4]]
+    fits_age5_g[[21]] <-sar_clim_age5[[5]]
+    fits_age5_g[[22]] <-sar_clim_age5[[6]]
+    fits_age5_g[[23]] <-sar_clim_age5[[7]]
+    fits_age5_g[[24]] <-sar_clim_age5[[8]]
+    fits_age5_g[[25]] <-sar_clim_age5[[9]]
+    fits_age5_g[[26]] <-sar_clim_age5[[10]]
+    fits_age5_g[[27]] <-sar_clim_age5[[11]]
+    fits_age5_g[[28]] <-sar_clim_age5[[12]]
+    fits_age5_g[[29]] <-sar_clim_age5[[13]]
+    fits_age5_g[[30]] <-sar_clim_age5[[14]]
+    fits_age5_g[[31]] <-sar_clim_age5[[15]]
+    # fits_age5_g[[32]] <-sar_clim_age5[[16]]
+    # fits_age5_g[[33]] <-sar_clim_age5[[17]]
+    fits_age5_g[[32]]  <-SAR45
+  }
+  if(groups[g]!="NOR"){names(fits_age5_g) <-c(paste0("rps~",cov),"sib45")}
+  if(groups[g]=="NOR"){names(fits_age5_g) <-c(paste0("rps~",cov),"sib45",paste0("sar~",cov),"SAR45")}
+  
+  fits_g[[1]] <-fits_age3_g
+  fits_g[[2]] <-fits_age4_g
+  fits_g[[3]] <-fits_age5_g
+  
+  names(fits_g) <-c("age3","age4","age5")
+  
+  fits[[g]] <-fits_g
+
+}
+names(fits) <-groups
+```  
+  
+## Model selection   
+We used Akaike's Information Criterion corrected for small sample sizes (AICc) to select the model that will be used to predict survival for next year. Model selection was conducted for age-3, age-4, and age-5 fish and the calculated AICc differences (deltaAIC) are reported below. 
+
+``` {r mod_select}  
+AICc_age3_g <-list()
+AICc_age4_g <-list()
+AICc_age5_g <-list()
+
+best_age3_g_rps <-list()
+best_age4_g_rps <-list()
+best_age5_g_rps <-list()
+best_age3_g_sar <-list()
+best_age4_g_sar <-list()
+best_age5_g_sar <-list()
+best_age3_g <-list()
+best_age4_g <-list()
+best_age5_g <-list()
+
+for(g in 1:length(groups)){
+  mod_type            <-c("sibling","climate") # ,"RPSpassed"
+  surv_metric         <-c("rps","sar")
+  mod_form            <-c("linear")
+  
+  # Age-3
+  if(params$systems=="Puyallup River"&groups[g]=="NOR"){
+    AICc_age3 <-tibble::rownames_to_column(MuMIn::AICc(fits[[g]][["age3"]][["rps~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~DTMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~COPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SST"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SSS"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["rps~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["rps~PDO"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ONI"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~DTMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~COPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~NCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~SCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~ICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~SST"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~SSS"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["sar~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["sar~PDO"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~ONI"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~ALBSA"]][["linear"]]
+                                                       ), "Model")  
+    # mod_name            <-c(rep(paste0("rps~",cov),1))
+    mod_name            <-c(rep(cov,1))
+    AICc_age3           <-cbind(mod_name,
+                                c(rep(surv_metric[1],length(cov)),rep(surv_metric[2],length(cov))),
+                                c(rep(mod_type[2],length(cov))),
+                                c(rep(mod_form,length(cov))),
+                                AICc_age3,
+                                qpcR::akaike.weights(AICc_age3$AICc))
+  }
+    
+  if(params$systems=="White River"&groups[g]!="NOR" | params$systems=="Puyallup River"&groups[g]=="HOR"){
+    AICc_age3 <-tibble::rownames_to_column(MuMIn::AICc(fits[[g]][["age3"]][["rps~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~DTMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~COPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SST"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SSS"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["rps~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["rps~PDO"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ONI"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sib23"]][["linear"]]
+                                                       ), "Model")
+    # mod_name            <-c(rep(paste0("rps~",cov),1),"sib23")
+    mod_name            <-c(rep(cov,1),"sib23")
+    AICc_age3           <-cbind(mod_name,
+                                rep(surv_metric[1],length(cov)+1),
+                                c(rep(mod_type[2],length(cov)),mod_type[1]),
+                                c(rep(mod_form,length(cov)+1)),
+                                AICc_age3,
+                                qpcR::akaike.weights(AICc_age3$AICc))
+  }
+  if(params$systems=="White River"&groups[g]=="NOR"){
+    AICc_age3 <-tibble::rownames_to_column(MuMIn::AICc(fits[[g]][["age3"]][["rps~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~DTMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~COPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~NCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SST"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~SSS"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["rps~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["rps~PDO"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ONI"]][["linear"]],
+                                                       fits[[g]][["age3"]][["rps~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sib23"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~DTMS"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~COPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~NCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~SCOPE"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~ICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~SST"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~SSS"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["sar~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age3"]][["sar~PDO"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~ONI"]][["linear"]],
+                                                       fits[[g]][["age3"]][["sar~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age3"]][["SAR23"]][["linear"]]
+                                                        #,fits[[g]][["age4"]][["RPSpassed"]][["linear"]],
+                                                       ), "Model")
+    # mod_name            <-c(rep(paste0("rps~",cov),1),rep("sib23",1),rep(paste0("sar~",cov),1),rep("SAR23",1))
+    mod_name            <-c(rep(cov,1),rep("sib23",1),rep(cov,1),rep("SAR23",1))
+    AICc_age3           <-cbind(mod_name,
+                                c(rep(surv_metric[1],length(cov)+1),rep(surv_metric[2],length(cov)+1)),
+                                c(rep(mod_type[2],length(cov)),rep(mod_type[1],1),rep(mod_type[2],length(cov)),rep(mod_type[1],1)),
+                                c(rep("linear",nrow(AICc_age3))),
+                                AICc_age3,
+                                qpcR::akaike.weights(AICc_age3$AICc))
+
+  }
+  
+  colnames(AICc_age3) <-c("mod_name","surv_metric","mod_type","mod_form","list_obj","df","AICc","deltaAIC","relLL","weight")
+
+  aicc_age3_rps <-dplyr::filter(AICc_age3,surv_metric=="rps")
+  aicc_age3_sar <-dplyr::filter(AICc_age3,surv_metric=="sar")
+
+  best_age3_rps       <-c(dplyr::filter(aicc_age3_rps,AICc==min(AICc))$mod_type,
+                          dplyr::filter(aicc_age3_rps,AICc==min(AICc))$mod_name,
+                          dplyr::filter(aicc_age3_rps,AICc==min(AICc))$surv_metric,
+                          dplyr::filter(aicc_age3_rps,AICc==min(AICc))$mod_form)
+  if(groups[g]=="NOR"){
+    best_age3_sar       <-c(dplyr::filter(aicc_age3_sar,AICc==min(AICc))$mod_type,
+                          dplyr::filter(aicc_age3_sar,AICc==min(AICc))$mod_name,
+                          dplyr::filter(aicc_age3_sar,AICc==min(AICc))$surv_metric,
+                          dplyr::filter(aicc_age3_sar,AICc==min(AICc))$mod_form)
+  }
+  best_age3           <-c(dplyr::filter(AICc_age3,AICc==min(AICc))$mod_type,
+                          dplyr::filter(AICc_age3,AICc==min(AICc))$mod_name,
+                          dplyr::filter(AICc_age3,AICc==min(AICc))$surv_metric,
+                          dplyr::filter(AICc_age3,AICc==min(AICc))$mod_form)
+
+  # Age-4
+  if(groups[g]=="NOR"){
+    AICc_age4 <-tibble::rownames_to_column(MuMIn::AICc(fits[[g]][["age4"]][["rps~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~DTMS"]][["linear"]],  
+                                                       fits[[g]][["age4"]][["rps~COPE"]][["linear"]],  
+                                                       fits[[g]][["age4"]][["rps~NCOPE"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["rps~SCOPE"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["rps~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~ICHTHY"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["rps~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~SST"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~SSS"]][["linear"]],
+                                                       # fits[[g]][["age4"]][["rps~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age4"]][["rps~PDO"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~ONI"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sib34"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~DTMS"]][["linear"]],  
+                                                       fits[[g]][["age4"]][["sar~COPE"]][["linear"]],  
+                                                       fits[[g]][["age4"]][["sar~NCOPE"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["sar~SCOPE"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["sar~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~ICHTHY"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["sar~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~SST"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~SSS"]][["linear"]],
+                                                       # fits[[g]][["age4"]][["sar~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age4"]][["sar~PDO"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~ONI"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sar~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age4"]][["SAR34"]][["linear"]]
+                                                      # ,fits[[g]][["age4"]][["RPSpassed"]][["linear"]],
+                                                       ), "Model")
+  # mod_name            <-c(rep(paste0("rps~",cov),1),rep("sib34",1),rep(paste0("sar~",cov),1),rep("SAR34",1))
+  mod_name            <-c(rep(cov,1),rep("sib34",1),rep(cov,1),rep("SAR34",1))
+  AICc_age4           <-cbind(mod_name,
+                              c(rep(surv_metric[1],length(cov)+1),rep(surv_metric[2],length(cov)+1)),
+                              c(rep(mod_type[2],length(cov)),rep(mod_type[1],1),rep(mod_type[2],length(cov)),rep(mod_type[1],1)),
+                              c(rep("linear",nrow(AICc_age4))),
+                              AICc_age4,
+                              qpcR::akaike.weights(AICc_age4$AICc))
+  }
+  if(groups[g]!="NOR"){
+    AICc_age4 <-tibble::rownames_to_column(MuMIn::AICc(fits[[g]][["age4"]][["rps~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~DTMS"]][["linear"]],  
+                                                       fits[[g]][["age4"]][["rps~COPE"]][["linear"]],  
+                                                       fits[[g]][["age4"]][["rps~NCOPE"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["rps~SCOPE"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["rps~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~ICHTHY"]][["linear"]], 
+                                                       fits[[g]][["age4"]][["rps~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~SST"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~SSS"]][["linear"]],
+                                                       # fits[[g]][["age4"]][["rps~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age4"]][["rps~PDO"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~ONI"]][["linear"]],
+                                                       fits[[g]][["age4"]][["rps~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age4"]][["sib34"]][["linear"]]
+                                                       ), "Model")
+  # mod_name            <-c(rep(paste0("rps~",cov),1),rep("sib34",1))
+  mod_name            <-c(rep(cov,1),rep("sib34",1))
+  AICc_age4           <-cbind(mod_name,
+                              c(rep(surv_metric[1],length(cov)+1)),
+                              c(rep(mod_type[2],length(cov)),rep(mod_type[1],1)),
+                              c(rep("linear",nrow(AICc_age4))),
+                              AICc_age4,
+                              qpcR::akaike.weights(AICc_age4$AICc))
+  }
+
+  colnames(AICc_age4) <-c("mod_name","surv_metric","mod_type","mod_form","list_obj","df","AICc","deltaAIC","relLL","weight")
+  aicc_age4_rps <-dplyr::filter(AICc_age4,surv_metric=="rps")
+  aicc_age4_sar <-dplyr::filter(AICc_age4,surv_metric=="sar")
+
+  best_age4_rps       <-c(dplyr::filter(aicc_age4_rps,AICc==min(AICc))$mod_type,
+                          dplyr::filter(aicc_age4_rps,AICc==min(AICc))$mod_name,
+                          dplyr::filter(aicc_age4_rps,AICc==min(AICc))$surv_metric,
+                          dplyr::filter(aicc_age4_rps,AICc==min(AICc))$mod_form)
+  if(groups[g]=="NOR"){
+    best_age4_sar       <-c(dplyr::filter(aicc_age4_sar,AICc==min(AICc))$mod_type,
+                            dplyr::filter(aicc_age4_sar,AICc==min(AICc))$mod_name,
+                            dplyr::filter(aicc_age4_sar,AICc==min(AICc))$surv_metric,
+                            dplyr::filter(aicc_age4_sar,AICc==min(AICc))$mod_form)
+  }
+    best_age4           <-c(dplyr::filter(AICc_age4,AICc==min(AICc))$mod_type,
+                          dplyr::filter(AICc_age4,AICc==min(AICc))$mod_name,
+                          dplyr::filter(AICc_age4,AICc==min(AICc))$surv_metric,
+                          dplyr::filter(AICc_age4,AICc==min(AICc))$mod_form)
+  
+  # Age-5
+  if(groups[g]=="NOR"){
+    AICc_age5 <-tibble::rownames_to_column(MuMIn::AICc(fits[[g]][["age5"]][["rps~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~DTMS"]][["linear"]],  
+                                                       fits[[g]][["age5"]][["rps~COPE"]][["linear"]],  
+                                                       fits[[g]][["age5"]][["rps~NCOPE"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["rps~SCOPE"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["rps~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~ICHTHY"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["rps~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~SST"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~SSS"]][["linear"]],
+                                                       # fits[[g]][["age5"]][["rps~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age5"]][["rps~PDO"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~ONI"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sib45"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~DTMS"]][["linear"]],  
+                                                       fits[[g]][["age5"]][["sar~COPE"]][["linear"]],  
+                                                       fits[[g]][["age5"]][["sar~NCOPE"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["sar~SCOPE"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["sar~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~ICHTHY"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["sar~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~SST"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~SSS"]][["linear"]],
+                                                       # fits[[g]][["age5"]][["sar~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age5"]][["sar~PDO"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~ONI"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sar~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age5"]][["SAR45"]][["linear"]]
+                                                      # ,fits[[g]][["age5"]][["RPSpassed"]][["linear"]],
+                                                       ), "Model")
+  # mod_name            <-c(rep(paste0("rps~",cov),1),rep("sib45",1),rep(paste0("sar~",cov),1),rep("SAR45",1))
+  mod_name            <-c(rep(cov,1),rep("sib45",1),rep(cov,1),rep("SAR45",1))
+  AICc_age5           <-cbind(mod_name,
+                              c(rep(surv_metric[1],length(cov)+1),rep(surv_metric[2],length(cov)+1)),
+                              c(rep(mod_type[2],length(cov)),rep(mod_type[1],1),rep(mod_type[2],length(cov)),rep(mod_type[1],1)),
+                              c(rep("linear",nrow(AICc_age5))),
+                              AICc_age5,
+                              qpcR::akaike.weights(AICc_age5$AICc))
+  }
+  if(groups[g]!="NOR"){
+    AICc_age5 <-tibble::rownames_to_column(MuMIn::AICc(fits[[g]][["age5"]][["rps~PDOJM"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~PDOMS"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~NPGOJM"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~NPGOMS"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~DTMS"]][["linear"]],  
+                                                       fits[[g]][["age5"]][["rps~COPE"]][["linear"]],  
+                                                       fits[[g]][["age5"]][["rps~NCOPE"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["rps~SCOPE"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["rps~BIOTRAN"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~ICHTHY"]][["linear"]], 
+                                                       fits[[g]][["age5"]][["rps~OSICHTHY"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~SST"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~SSS"]][["linear"]],
+                                                       # fits[[g]][["age5"]][["rps~NPGO"]][["linear"]],
+                                                       # fits[[g]][["age5"]][["rps~PDO"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~ONI"]][["linear"]],
+                                                       fits[[g]][["age5"]][["rps~ALBSA"]][["linear"]],
+                                                       fits[[g]][["age5"]][["sib45"]][["linear"]]
+                                                      # ,fits[[g]][["age5"]][["RPSpassed"]][["linear"]],
+                                                       ), "Model")
+  # mod_name            <-c(rep(paste0("rps~",cov),1),rep("sib45",1))
+  mod_name            <-c(rep(cov,1),rep("sib45",1))
+  AICc_age5           <-cbind(mod_name,
+                              c(rep(surv_metric[1],length(cov)+1)),
+                              c(rep(mod_type[2],length(cov)),rep(mod_type[1],1)),
+                              c(rep("linear",nrow(AICc_age5))),
+                              AICc_age5,
+                              qpcR::akaike.weights(AICc_age5$AICc))
+  }
+
+  colnames(AICc_age5) <-c("mod_name","surv_metric","mod_type","mod_form","list_obj","df","AICc","deltaAIC","relLL","weight")
+  aicc_age5_rps <-dplyr::filter(AICc_age5,surv_metric=="rps")
+  aicc_age5_sar <-dplyr::filter(AICc_age5,surv_metric=="sar")
+
+  best_age5_rps       <-c(dplyr::filter(aicc_age5_rps,AICc==min(AICc))$mod_type,
+                          dplyr::filter(aicc_age5_rps,AICc==min(AICc))$mod_name,
+                          dplyr::filter(aicc_age5_rps,AICc==min(AICc))$surv_metric,
+                          dplyr::filter(aicc_age5_rps,AICc==min(AICc))$mod_form)
+  if(groups[g]=="NOR"){
+    best_age5_sar       <-c(dplyr::filter(aicc_age5_sar,AICc==min(AICc))$mod_type,
+                            dplyr::filter(aicc_age5_sar,AICc==min(AICc))$mod_name,
+                            dplyr::filter(aicc_age5_sar,AICc==min(AICc))$surv_metric,
+                            dplyr::filter(aicc_age5_sar,AICc==min(AICc))$mod_form)
+  }
+  best_age5           <-c(dplyr::filter(AICc_age5,AICc==min(AICc))$mod_type,
+                          dplyr::filter(AICc_age5,AICc==min(AICc))$mod_name,
+                          dplyr::filter(AICc_age5,AICc==min(AICc))$surv_metric,
+                          dplyr::filter(AICc_age5,AICc==min(AICc))$mod_form)
+  
+  AICc_age3_g[[g]] <-AICc_age3
+  AICc_age4_g[[g]] <-AICc_age4
+  AICc_age5_g[[g]] <-AICc_age5
+  best_age3_g_rps[[g]] <-best_age3_rps
+  best_age4_g_rps[[g]] <-best_age4_rps
+  best_age5_g_rps[[g]] <-best_age5_rps
+  if(groups[g]=="NOR"){
+    best_age3_g_sar[[g]] <-best_age3_sar
+    best_age4_g_sar[[g]] <-best_age4_sar
+    best_age5_g_sar[[g]] <-best_age5_sar
+  }
+  best_age3_g[[g]] <-best_age3
+  best_age4_g[[g]] <-best_age4
+  best_age5_g[[g]] <-best_age5
+}
+names(AICc_age3_g) <-groups
+names(AICc_age4_g) <-groups
+names(AICc_age5_g) <-groups
+names(best_age3_g_rps) <-groups
+names(best_age4_g_rps) <-groups
+names(best_age5_g_rps) <-groups
+names(best_age3_g_sar) <-"NOR"
+names(best_age4_g_sar) <-"NOR"
+names(best_age5_g_sar) <-"NOR"
+names(best_age3_g) <-groups
+names(best_age4_g) <-groups
+names(best_age5_g) <-groups
+
+
+### AICc Table for first group in system 
+# Age-3
+AICc_age3_g1 <-AICc_age3_g[[1]]
+AICc_age3_g1 <-AICc_age3_g1[order(AICc_age3_g1$AICc),c(1,2,3,7,8)]
+AICc_age3_g1 <-cbind(AICc_age3_g1[1:5,], rep("Age-3",5), rep(groups[1],5))
+colnames(AICc_age3_g1) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+# Age-4
+AICc_age4_g1 <-AICc_age4_g[[1]]
+AICc_age4_g1 <-AICc_age4_g1[order(AICc_age4_g1$AICc),c(1,2,3,7,8)]
+AICc_age4_g1 <-cbind(AICc_age4_g1[1:5,], rep("Age-4",5), rep(groups[1],5))
+colnames(AICc_age4_g1) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+# Age-5
+AICc_age5_g1 <-AICc_age5_g[[1]]
+AICc_age5_g1 <-AICc_age5_g1[order(AICc_age5_g1$AICc),c(1,2,3,7,8)]
+AICc_age5_g1 <-cbind(AICc_age5_g1[1:5,], rep("Age-5",5), rep(groups[1],5))
+colnames(AICc_age5_g1) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+
+if(length(groups)>1){
+  ### AICc Table for second group in system (if exists)
+  # Age-3
+  AICc_age3_g2 <-AICc_age3_g[[2]]
+  AICc_age3_g2 <-AICc_age3_g2[order(AICc_age3_g2$AICc),c(1,2,3,7,8)]
+  AICc_age3_g2 <-cbind(AICc_age3_g2[1:5,], rep("Age-3",5), rep(groups[2],5))
+  colnames(AICc_age3_g2) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+  # Age-4
+  AICc_age4_g2 <-AICc_age4_g[[2]]
+  AICc_age4_g2 <-AICc_age4_g2[order(AICc_age4_g2$AICc),c(1,2,3,7,8)]
+  AICc_age4_g2 <-cbind(AICc_age4_g2[1:5,], rep("Age-4",5), rep(groups[2],5))
+  colnames(AICc_age4_g2) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+  # Age-5
+  AICc_age5_g2 <-AICc_age5_g[[2]]
+  AICc_age5_g2 <-AICc_age5_g2[order(AICc_age5_g2$AICc),c(1,2,3,7,8)]
+  AICc_age5_g2 <-cbind(AICc_age5_g2[1:5,], rep("Age-5",5), rep(groups[2],5))
+  colnames(AICc_age5_g2) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+}
+
+if(length(groups)>2){
+  ### AICc Table for second group in system (if exists)
+  # Age-3
+  AICc_age3_g3 <-AICc_age3_g[[3]]
+  AICc_age3_g3 <-AICc_age3_g3[order(AICc_age3_g3$AICc),c(1,2,3,7,8)]
+  AICc_age3_g3 <-cbind(AICc_age3_g3[1:5,], rep("Age-3",5), rep(groups[3],5))
+  colnames(AICc_age3_g3) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+  # Age-4
+  AICc_age4_g3 <-AICc_age4_g[[3]]
+  AICc_age4_g3 <-AICc_age4_g3[order(AICc_age4_g3$AICc),c(1,2,3,7,8)]
+  AICc_age4_g3 <-cbind(AICc_age4_g3[1:5,], rep("Age-4",5), rep(groups[3],5))
+  colnames(AICc_age4_g3) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+  # Age-5
+  AICc_age5_g3 <-AICc_age5_g[[3]]
+  AICc_age5_g3 <-AICc_age5_g3[order(AICc_age5_g3$AICc),c(1,2,3,7,8)]
+  AICc_age5_g3 <-cbind(AICc_age5_g3[1:5,], rep("Age-5",5), rep(groups[3],5))
+  colnames(AICc_age5_g3) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+}
+
+if(length(groups)>3){
+  ### AICc Table for second group in system (if exists)
+  # Age-3
+  AICc_age3_g4 <-AICc_age3_g[[4]]
+  AICc_age3_g4 <-AICc_age3_g4[order(AICc_age3_g4$AICc),c(1,2,3,7,8)]
+  AICc_age3_g4 <-cbind(AICc_age3_g4[1:5,], rep("Age-3",5), rep(groups[4],5))
+  colnames(AICc_age3_g4) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+  # Age-4
+  AICc_age4_g4 <-AICc_age4_g[[4]]
+  AICc_age4_g4 <-AICc_age4_g4[order(AICc_age4_g4$AICc),c(1,2,3,7,8)]
+  AICc_age4_g4 <-cbind(AICc_age4_g4[1:5,], rep("Age-4",5), rep(groups[4],5))
+  colnames(AICc_age4_g4) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+  # Age-5
+  AICc_age5_g4 <-AICc_age5_g[[4]]
+  AICc_age5_g4 <-AICc_age5_g4[order(AICc_age5_g4$AICc),c(1,2,3,7,8)]
+  AICc_age5_g4 <-cbind(AICc_age5_g4[1:5,], rep("Age-5",5), rep(groups[4],5))
+  colnames(AICc_age5_g4) <-c("mod_name","survival_metric","mod_type","AICc","deltaAIC","Age-Class","Stock")
+}
+
+if(length(groups)==1){AICc_table <-rbind(AICc_age3_g1,AICc_age4_g1,AICc_age5_g1)}
+if(length(groups)==2){AICc_table <-rbind(AICc_age3_g1,AICc_age4_g1,AICc_age5_g1,AICc_age3_g2,AICc_age4_g2,AICc_age5_g2)}
+if(length(groups)==3){AICc_table <-rbind(AICc_age3_g1,AICc_age4_g1,AICc_age5_g1,AICc_age3_g2,AICc_age4_g2,AICc_age5_g2,
+                                         AICc_age3_g3,AICc_age4_g3,AICc_age5_g3)}
+if(length(groups)==4){AICc_table <-rbind(AICc_age3_g1,AICc_age4_g1,AICc_age5_g1,AICc_age3_g2,AICc_age4_g2,AICc_age5_g2,
+                                         AICc_age3_g3,AICc_age4_g3,AICc_age5_g3,AICc_age3_g4,AICc_age4_g4,AICc_age5_g4)}
+AICc_table <-AICc_table[order(AICc_table$`Age-Class`),]
+
+# install.packages("qpcR")
+# library(qpcR)
+# AICc_table$AIC_weights <-qpcR::akaike.weights(AICc_table$AICc)
+
+if(length(groups)==1){
+  AICc_table[,c(1,2,3,5,6,7)] %>%
+    kbl(row.names = FALSE, caption = "Table 5. Differences in Akaike's Information Criterion corrected for small sample sizes (AICc) across the top 5 models for each age-class and stock.",digits=1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Age-3" = 5, "Age-4" = 5, "Age-5" = 5))
+}
+if(length(groups)==2){
+  AICc_table[,c(1,2,3,5,6,7)] %>%
+    kbl(row.names = FALSE, caption = "Table 5. Differences in Akaike's Information Criterion corrected for small sample sizes (AICc) across the top 5 models for each age-class and stock.",digits=1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Age-3" = 10, "Age-4" = 10, "Age-5" = 10)) %>%
+    row_spec(seq(5, nrow(AICc_table), 5), extra_css = "border-bottom: 1px solid;")
+}
+if(length(groups)==3){
+  AICc_table[,c(1,2,3,5,6,7)] %>%
+    kbl(row.names = FALSE, caption = "Table 5. Differences in Akaike's Information Criterion corrected for small sample sizes (AICc) across the top 5 models for each age-class and stock.",digits=1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Age-3" = 15, "Age-4" = 15, "Age-5" = 15)) %>%
+    row_spec(seq(5, nrow(AICc_table), 5), extra_css = "border-bottom: 1px solid;")
+}
+if(length(groups)==4){
+  AICc_table[,c(1,2,3,5,6,7)] %>%
+    kbl(row.names = FALSE, caption = "Table 5. Differences in Akaike's Information Criterion corrected for small sample sizes (AICc) across the top 5 models for each age-class and stock.",digits=1) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("Age-3" = 20, "Age-4" = 20, "Age-5" = 20)) %>%
+    row_spec(seq(5, nrow(AICc_table), 5), extra_css = "border-bottom: 1px solid;")
+}
+```
+<br>
+<br>
+
+## Survial predictions (rps and SAR)
+* Predict recruits-per-spawner for each age-class (ages 3-5) using AICc-selected model fit
+
+``` {r predict, out.height=c('100%','60%'), fig.cap = c("**Figure 4a.** Recruits-per-spawner (rps) and the predictor variable from the AICc-selected model for each age-class and stock. The red line shows the model fit, and the green circle shows the forecasted rps using the model fit and the new year of data for each brood year-age class combination.","**Figure 4b.** Smolt-adult-return (SAR) and the predictor variable from the AICc-selected model for each age-class and stock. The red line shows the model fit, and the green circle shows the forecasted SAR using the model fit and the new year of data for each brood year-age class combination."), fig.topcaption = TRUE}
+# Gather rps and sar predictions
+rps_list_1 <-list()
+sar_list_1 <-list()
+ageX_dat_rps   <-list()
+ageX_dat_sar   <-list()
+
+for(g in 1:length(groups)){
+  rps_list_g <-list()
+  sar_list_g <-list()
+  
+  ###########################
+  ### Age-3 rps/SAR prediction
+  # Sibling models
+  if(best_age3_g[[g]][1]=="sibling"){
+    if(groups[g]=="NOR"){
+    # SAR Age-3 ~ Age-2
+    # if(best_age3_g[[g]][3]=="sar"){
+      age3_dat_sar <-data.frame(
+        predvar     = dplyr::filter(sar_df_g,Stock==groups[g] & brood_yr==curr_yr-2)$age2_sar,
+        surv_metric = "sar",
+        brood_yr    = dplyr::filter(sar_df_g,Stock==groups[g] & brood_yr==curr_yr-2)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age3",
+        Mod_name    = "SAR23"
+      )
+      # lin
+      sib_sar_age3 <-as.numeric(predict(fits[[g]][["age3"]][["SAR23"]][["linear"]], newdata = data.frame(age2_sar = age3_dat_sar$predvar)))  
+      # save prediction
+      sar_list_g[[1]] <-sib_sar_age3
+      # names(sar_list_g[[1]]) <-paste(best_age3_g[[g]], collapse = '_')
+      names(sar_list_g[[1]]) <-"sibling_SAR23_sar_linear"
+    # }
+    }
+    # RPS Age-3 ~ Age-2
+    # if(best_age3_g[[g]][3]=="rps"){
+      age3_dat_rps <-data.frame(
+        predvar     = dplyr::filter(N_at_age2_g[[g]],return_yr==curr_yr)$age2_rps,
+        surv_metric = "rps",
+        brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-3)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age3",
+        Mod_name    = "sib23"
+      )
+      # lin
+      sib_rps_age3 <-as.numeric(predict(fits[[g]][["age3"]][["sib23"]][["linear"]], newdata = data.frame(age2_rps = age3_dat_rps$predvar)))  
+      # save prediction
+      rps_list_g[[1]] <-sib_rps_age3
+      # names(rps_list_g[[1]]) <-paste(best_age3_g[[g]], collapse = '_')
+      names(rps_list_g[[1]]) <-"sibling_sib23_rps_linear"
+    # }
+  }
+  # RPS ~ Total Passed Model Prediction
+  if(groups[g]=="NOR"){
+    if(params$systems=="White River"){
+      if(best_age3_g[[g]][1]=="RPSpassed"){
+        tp_foreyr_age3 <-dplyr::filter(run_recon,return_yr==fore_yr-3)$Total_passed
+        # lin
+          rpsPassed_rps_age3 <-mean(dplyr::filter(props_ts_sys_df,Group=="NOR",return_yr>=2001 & return_yr<=2017)$age_3)*
+                            as.numeric(predict(fits[[g]][["age3"]][["RPSpassed"]][["linear"]], newdata = data.frame(total_passed = tp_foreyr_age3)))
+        # save prediction
+        rps_list_g[[1]] <-rpsPassed_rps_age3
+        # names(rps_list_g[[1]]) <-"rpsPassed_rps_age3"
+        names(rps_list_g[[1]]) <-paste(best_age3_g[[g]], collapse = '_')
+      }
+    }
+  }
+  # RPS ~ Climate Model Prediction
+  if(best_age3_g[[g]][1]=="climate"){
+    # # rps~clim age3
+    # if(best_age3_g[[g]][3]=="rps"){
+    #   
+    # }
+    # # sar~clim age3
+    # if(best_age3_g[[g]][3]=="sar"){
+    # 
+    # }
+    ### rps
+    age3_dat_rps <-data.frame(
+      predvar     = surv_hab[which(surv_hab$brood_yr==(fore_yr-3)),best_age3_g[[g]][2]],
+      surv_metric = "rps",
+      brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-3)$brood_yr,
+      Stock       = groups[g],
+      Age_Class   = "age3",
+      Mod_name    = best_age3_g[[g]][2]
+    )
+    # lin
+    fit_select    <-fits[[g]][["age3"]][[paste0("rps~",best_age3_g[[g]][2])]]
+    clim_rps_age3 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age3_dat_rps$predvar)))
+    # save prediction
+    rps_list_g[[1]] <-clim_rps_age3
+    # names(rps_list_g[[1]]) <-"clim_rps_age3"
+    names(rps_list_g[[1]]) <-paste(best_age3_g[[g]], collapse = '_')
+    
+    if(groups[g]=="NOR"){
+      ### SAR    
+      age3_dat_sar <-data.frame(
+        predvar     = surv_hab[which(surv_hab$brood_yr==(fore_yr-3)),best_age3_g[[g]][2]],
+        surv_metric = "sar",
+        brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-3)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age3",
+        Mod_name    = best_age3_g[[g]][2]
+      )
+      # lin
+      fit_select    <-fits[[g]][["age3"]][[paste0("sar~",best_age3_g[[g]][2])]]
+      clim_sar_age3 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age3_dat_sar$predvar)))
+      # save prediction
+      sar_list_g[[1]] <-clim_sar_age3
+      # names(rps_list_g[[1]]) <-"clim_rps_age3"
+      names(sar_list_g[[1]]) <-paste(best_age3_g[[g]], collapse = '_')
+    }
+  } 
+  
+  ###########################
+  ### Age-4 rps/SAR prediction
+  # Sibling models
+  if(best_age4_g[[g]][1]=="sibling"){
+    # SAR Age-4 ~ Age-3
+    # if(best_age4_g[[g]][3]=="sar"){
+    if(groups[g]=="NOR"){
+      age4_dat_sar <-data.frame(
+        predvar     = dplyr::filter(sar_df_g,Stock==groups[g] & brood_yr==curr_yr-3)$age3_sar,
+        surv_metric = "sar",
+        brood_yr    = dplyr::filter(sar_df_g,Stock==groups[g] & brood_yr==curr_yr-3)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age4",
+        Mod_name    = "SAR34"
+      )
+      # lin
+      sib_sar_age4 <-as.numeric(predict(fits[[g]][["age4"]][["SAR34"]][["linear"]], newdata = data.frame(age3_sar = age4_dat_sar$predvar)))  
+      # save prediction
+      sar_list_g[[2]] <-sib_sar_age4
+      names(sar_list_g[[2]]) <-"sibling_SAR34_sar_linear"
+      # names(rps_list_g[[2]]) <-paste(best_age4_g[[g]], collapse = '_')
+    # }
+    }
+    # Age-4 ~ Age-3 sibling rps
+    # if(best_age4_g[[g]][3]=="rps"){
+      age4_dat_rps <-data.frame(
+        predvar = dplyr::filter(N_at_age3_g[[g]],return_yr==curr_yr)$age3_rps,
+        surv_metric = "rps",
+        brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-4)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age4",
+        Mod_name = "sib34"
+      )
+      # lin
+      sib_rps_age4 <-as.numeric(predict(fits[[g]][["age4"]][["sib34"]][["linear"]], newdata = data.frame(age3_rps = age4_dat_rps$predvar)))  
+      # save prediction
+      rps_list_g[[2]] <-sib_rps_age4
+      names(rps_list_g[[2]]) <-"sibling_sib34_rps_linear"
+      # names(rps_list_g[[2]]) <-paste(best_age4_g[[g]], collapse = '_')
+    # }
+  }
+  # RPS ~ Total Passed Model Prediction
+  if(groups[g]=="NOR"){
+    if(params$systems=="White River"){
+      if(best_age4_g[[g]][1]=="RPSpassed"){
+        tp_foreyr_age4 <-dplyr::filter(run_recon,return_yr==fore_yr-4)$Total_passed
+        # lin
+        rpsPassed_rps_age4 <-mean(dplyr::filter(props_ts_sys_df,Group=="NOR",return_yr>=2001 & return_yr<=2017)$age_4)*
+                            as.numeric(predict(fits[[g]][["age4"]][["RPSpassed"]][["linear"]], newdata = data.frame(total_passed = tp_foreyr_age4)))
+        # save prediction
+        rps_list_g[[2]] <-rpsPassed_rps_age4
+        names(rps_list_g[[2]]) <-paste(best_age4_g[[g]], collapse = '_')
+      }
+    }
+  }
+  # RPS ~ Climate Model Prediction
+  if(best_age4_g[[g]][1]=="climate"){
+    ### rps
+    age4_dat_rps <-data.frame(
+      predvar     = surv_hab[which(surv_hab$brood_yr==(fore_yr-4)),best_age4_g[[g]][2]],
+      surv_metric = "rps",
+      brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-4)$brood_yr,
+      Stock       = groups[g],
+      Age_Class   = "age4",
+      Mod_name = best_age4_g[[g]][2]
+    )
+    # lin
+    fit_select    <-fits[[g]][["age4"]][[paste0("rps~",best_age4_g[[g]][2])]]
+    clim_rps_age4 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age4_dat_rps$predvar)))
+    # clim_rps_age4 <-as.numeric(predict(fits[[g]][["age4"]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][3]]], newdata = data.frame(cov = age4_dat$predvar)))
+    # save prediction
+    rps_list_g[[2]] <-clim_rps_age4
+    names(rps_list_g[[2]]) <-paste(best_age4_g[[g]], collapse = '_')
+
+    if(groups[g]=="NOR"){
+      ### sar
+      age4_dat_sar <-data.frame(
+        predvar = surv_hab[which(surv_hab$brood_yr==(fore_yr-4)),best_age4_g[[g]][2]],
+        surv_metric = "sar",
+        brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-4)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age4",
+        Mod_name = best_age4_g[[g]][2]
+      )
+      # lin
+      fit_select    <-fits[[g]][["age4"]][[paste0("sar~",best_age4_g[[g]][2])]]
+      clim_sar_age4 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age4_dat_sar$predvar)))
+      # clim_rps_age4 <-as.numeric(predict(fits[[g]][["age4"]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][3]]], newdata = data.frame(cov = age4_dat$predvar)))
+      # save prediction
+      sar_list_g[[2]] <-clim_rps_age4
+      names(sar_list_g[[2]]) <-paste(best_age4_g[[g]], collapse = '_')
+    }
+  } 
+  
+  ###########################
+  ### Age-5 rps/SAR prediction
+  # Sibling models
+  if(best_age5_g[[g]][1]=="sibling"){
+    # SAR Age-5 ~ Age-4
+    if(groups[g]=="NOR"){
+    # if(best_age5_g[[g]][3]=="sar"){
+      age5_dat_sar <-data.frame(
+        predvar     = dplyr::filter(sar_df_g,Stock==groups[g] & brood_yr==curr_yr-4)$age4_sar,
+        surv_metric = "sar",
+        brood_yr    = dplyr::filter(sar_df_g,Stock==groups[g] & brood_yr==curr_yr-4)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age5",
+        Mod_name    = "SAR45"
+      )
+      # lin
+      sib_sar_age5 <-as.numeric(predict(fits[[g]][["age5"]][["SAR45"]][["linear"]], newdata = data.frame(age4_sar = age5_dat_sar$predvar)))  
+      # save prediction
+      sar_list_g[[3]] <-sib_sar_age5
+      names(sar_list_g[[1]]) <-"sibling_SAR45_sar_linear"
+      # names(rps_list_g[[3]]) <-paste(best_age5_g[[g]], collapse = '_')
+    # }
+    }
+    # Age-5 ~ Age-4 sibling rps
+    # if(best_age5_g[[g]][3]=="rps"){
+      age5_dat_rps <-data.frame(
+        predvar = dplyr::filter(N_at_age4_g[[g]],return_yr==curr_yr)$age4_rps,
+        surv_metric = "rps",
+        brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-5)$brood_yr,
+        Stock       = groups[g],
+        Age_Class   = "age5",
+        Mod_name = "sib45"
+      )
+      # lin
+      sib_rps_age5 <-as.numeric(predict(fits[[g]][["age5"]][["sib45"]][["linear"]], newdata = data.frame(age4_rps = age5_dat_rps$predvar)))
+      # save prediction
+      rps_list_g[[3]] <-sib_rps_age5
+      # names(rps_list_g[[3]]) <-paste(best_age5_g[[g]], collapse = '_')
+      names(rps_list_g[[3]]) <-"sibling_sib45_rps_linear"
+    # }
+  }
+  # RPS ~ Total Passed Model Prediction
+  if(groups[g]=="NOR"){
+    if(params$systems=="White River"){
+      if(best_age5_g[[g]][1]=="RPSpassed"){
+        tp_foreyr_age5 <-dplyr::filter(run_recon,return_yr==fore_yr-5)$Total_passed
+        # lin
+        rpsPassed_rps_age5 <-mean(dplyr::filter(props_ts_sys_df,Group=="NOR",return_yr>=2001 & return_yr<=2017)$age_5)*
+                            as.numeric(predict(fits[[g]][["age5"]][["RPSpassed"]][["linear"]], newdata = data.frame(total_passed = tp_foreyr_age5)))
+        # save prediction
+        rps_list_g[[3]] <-rpsPassed_rps_age5
+        names(rps_list_g[[3]]) <-paste(best_age5_g[[g]], collapse = '_')
+      }
+    }
+  }
+  # RPS ~ Climate Model Prediction
+  if(best_age5_g[[g]][1]=="climate"){
+    # rps
+    age5_dat_rps <-data.frame(
+      predvar   = surv_hab[which(surv_hab$brood_yr==(fore_yr-5)),best_age5_g[[g]][2]],
+      surv_metric = "rps",
+      brood_yr  = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore-yr-5)$brood_yr,
+      Stock     = groups[g],
+      Age_Class = "age5",
+      Mod_name = best_age5_g[[g]][2]
+    )
+    # lin
+    fit_select    <-fits[[g]][["age5"]][[paste0("rps~",best_age5_g[[g]][2])]]
+    clim_rps_age5 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age5_dat_rps$predvar)))
+    # clim_rps_age5 <-as.numeric(predict(fits[[g]][["age5"]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][3]]], newdata = data.frame(cov = age5_dat$predvar)))
+    # save prediction
+    rps_list_g[[3]]        <-clim_rps_age5
+    names(rps_list_g[[3]]) <-paste(best_age5_g[[g]], collapse = '_')
+
+    if(groups[g]=="NOR"){
+      # sar
+      age5_dat_sar <-data.frame(
+        predvar   = surv_hab[which(surv_hab$brood_yr==(fore_yr-5)),best_age5_g[[g]][2]],
+        surv_metric = "sar",
+        brood_yr  = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore-yr-5)$brood_yr,
+        Stock     = groups[g],
+        Age_Class = "age5",
+        Mod_name = best_age5_g[[g]][2]
+      )
+      # lin
+      fit_select    <-fits[[g]][["age5"]][[paste0("sar~",best_age5_g[[g]][2])]]
+      clim_sar_age5 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age5_dat_sar$predvar)))
+      # clim_rps_age5 <-as.numeric(predict(fits[[g]][["age5"]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][3]]], newdata = data.frame(cov = age5_dat$predvar)))
+      # save prediction
+      sar_list_g[[3]]        <-clim_sar_age5
+      names(sar_list_g[[3]]) <-paste(best_age5_g[[g]], collapse = '_')
+    }
+  } 
+  names(rps_list_g)<-c("age-3","age-4","age-5")
+  rps_list_1[[g]] <-rps_list_g
+  if(groups[g]=="NOR"){
+    names(sar_list_g)<-c("age-3","age-4","age-5")
+    sar_list_1[[g]] <-sar_list_g
+    ageX_dat_sar[[g]] <-rbind(age3_dat_sar,age4_dat_sar,age5_dat_sar)
+  }
+  ageX_dat_rps[[g]] <-rbind(age3_dat_rps,age4_dat_rps,age5_dat_rps)
+}
+names(rps_list_1)   <-groups
+names(ageX_dat_rps) <-groups
+names(sar_list_1)   <-"NOR"
+names(ageX_dat_sar) <-"NOR"
+
+######################
+# Plot sar~pred_var or rps~pred_var & the fit of the best model
+# 3x2 plot: rows = age-classes, cols = stock
+ages <-c("age3","age4","age5")
+fit_dat_a_rps <-list()
+fit_dat_g_rps <-list()
+fit_dat_a_sar <-list()
+fit_dat_g_sar <-list()
+
+for(g in 1:length(groups)){
+  # rps
+  for(a in 1:length(ages)){
+    if(ages[a]=="age3"){
+      if(best_age3_g[[g]][1]=="climate"){fit_dat <-cbind(fits[[g]][[a]][[paste0("rps~",best_age3_g[[g]][2])]][[best_age3_g[[g]][4]]]$model,
+                                                       as.numeric(predict(fits[[g]][[a]][[paste0("rps~",best_age3_g[[g]][2])]][[best_age3_g[[g]][4]]])))}
+      if(best_age3_g[[g]][1]=="sibling"){fit_dat <-cbind(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][4]]]$model,
+                                                       as.numeric(predict(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][4]]])))}
+      # fit_dat <-cbind(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][3]]]$model,
+      #                 as.numeric(predict(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][3]]])))
+    }
+    if(ages[a]=="age4"){
+      if(best_age4_g[[g]][1]=="climate"){fit_dat <-cbind(fits[[g]][[a]][[paste0("rps~",best_age4_g[[g]][2])]][[best_age4_g[[g]][4]]]$model,
+                                                       as.numeric(predict(fits[[g]][[a]][[paste0("rps~",best_age4_g[[g]][2])]][[best_age4_g[[g]][4]]])))}
+      if(best_age4_g[[g]][1]=="sibling"){fit_dat <-cbind(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][4]]]$model,
+                                                       as.numeric(predict(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][4]]])))}
+      # fit_dat <-cbind(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][3]]]$model,
+      #                 as.numeric(predict(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][3]]])))
+    }
+    if(ages[a]=="age5"){
+      if(best_age5_g[[g]][1]=="climate"){fit_dat <-cbind(fits[[g]][[a]][[paste0("rps~",best_age5_g[[g]][2])]][[best_age5_g[[g]][4]]]$model,
+                                                       as.numeric(predict(fits[[g]][[a]][[paste0("rps~",best_age5_g[[g]][2])]][[best_age5_g[[g]][4]]])))}
+      if(best_age5_g[[g]][1]=="sibling"){fit_dat <-cbind(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][4]]]$model,
+                                                       as.numeric(predict(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][4]]])))}
+      # fit_dat <-cbind(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][3]]]$model,
+      #                 as.numeric(predict(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][3]]])))
+    }
+    fit_dat$Stock <-rep(groups[g], nrow(fit_dat))
+    fit_dat$Age_Class <-rep(ages[a], nrow(fit_dat))
+    # fit_dat$Year <-
+    if(ages[a]=="age3"){fit_dat$Mod_name <-rep(paste(best_age3_g[[g]][1],"rps",sep="_"), nrow(fit_dat))}
+    if(ages[a]=="age4"){fit_dat$Mod_name <-rep(paste(best_age4_g[[g]][1],"rps",sep="_"), nrow(fit_dat))}
+    if(ages[a]=="age5"){fit_dat$Mod_name <-rep(paste(best_age5_g[[g]][1],"rps",sep="_"), nrow(fit_dat))}
+    colnames(fit_dat) <-c("rps","predvar","rps_pred","Stock","Age_Class","Mod_name")
+    # colnames(fit_dat) <-c(colnames(fit_dat)[1:2],"rps_pred","Stock","Age_Class")
+    fit_dat_a_rps[[a]]<-fit_dat
+  }
+  names(fit_dat_a_rps) <-ages
+  fit_dat_g_rps[[g]] <-fit_dat_a_rps
+  
+  # sar
+  if(groups[g]=="NOR"){
+    for(a in 1:length(ages)){
+      if(ages[a]=="age3"){
+        if(best_age3_g[[g]][1]=="climate"){fit_dat <-cbind(fits[[g]][[a]][[paste0("sar~",best_age3_g[[g]][2])]][[best_age3_g[[g]][4]]]$model,
+                                                         as.numeric(predict(fits[[g]][[a]][[paste0("sar~",best_age3_g[[g]][2])]][[best_age3_g[[g]][4]]])))}
+        if(best_age3_g[[g]][1]=="sibling"){fit_dat <-cbind(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][4]]]$model,
+                                                         as.numeric(predict(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][4]]])))}
+        # fit_dat <-cbind(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][3]]]$model,
+        #                 as.numeric(predict(fits[[g]][[a]][[best_age3_g[[g]][2]]][[best_age3_g[[g]][3]]])))
+      }
+      if(ages[a]=="age4"){
+        if(best_age4_g[[g]][1]=="climate"){fit_dat <-cbind(fits[[g]][[a]][[paste0("sar~",best_age4_g[[g]][2])]][[best_age4_g[[g]][4]]]$model,
+                                                         as.numeric(predict(fits[[g]][[a]][[paste0("sar~",best_age4_g[[g]][2])]][[best_age4_g[[g]][4]]])))}
+        if(best_age4_g[[g]][1]=="sibling"){fit_dat <-cbind(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][4]]]$model,
+                                                         as.numeric(predict(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][4]]])))}
+        # fit_dat <-cbind(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][3]]]$model,
+        #                 as.numeric(predict(fits[[g]][[a]][[best_age4_g[[g]][2]]][[best_age4_g[[g]][3]]])))
+      }
+      if(ages[a]=="age5"){
+        if(best_age5_g[[g]][1]=="climate"){fit_dat <-cbind(fits[[g]][[a]][[paste0("sar~",best_age5_g[[g]][2])]][[best_age5_g[[g]][4]]]$model,
+                                                         as.numeric(predict(fits[[g]][[a]][[paste0("sar~",best_age5_g[[g]][2])]][[best_age5_g[[g]][4]]])))}
+        if(best_age5_g[[g]][1]=="sibling"){fit_dat <-cbind(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][4]]]$model,
+                                                         as.numeric(predict(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][4]]])))}
+        # fit_dat <-cbind(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][3]]]$model,
+        #                 as.numeric(predict(fits[[g]][[a]][[best_age5_g[[g]][2]]][[best_age5_g[[g]][3]]])))
+      }
+      fit_dat$Stock <-rep(groups[g], nrow(fit_dat))
+      fit_dat$Age_Class <-rep(ages[a], nrow(fit_dat))
+      # fit_dat$Year <-
+      if(ages[a]=="age3"){fit_dat$Mod_name <-rep(paste(best_age3_g[[g]][1],"sar",sep="_"), nrow(fit_dat))}
+      if(ages[a]=="age4"){fit_dat$Mod_name <-rep(paste(best_age4_g[[g]][1],"sar",sep="_"), nrow(fit_dat))}
+      if(ages[a]=="age5"){fit_dat$Mod_name <-rep(paste(best_age5_g[[g]][1],"sar",sep="_"), nrow(fit_dat))}
+      colnames(fit_dat) <-c("sar","predvar","sar_pred","Stock","Age_Class","Mod_name")
+      # colnames(fit_dat) <-c(colnames(fit_dat)[1:2],"rps_pred","Stock","Age_Class")
+      fit_dat_a_sar[[a]]<-fit_dat
+    }
+    names(fit_dat_a_sar) <-ages
+    fit_dat_g_sar[[g]] <-fit_dat_a_sar
+  }
+}
+names(fit_dat_g_rps) <-groups
+names(fit_dat_g_sar) <-"NOR"
+
+##### Table of forecasts and plots of top model fits over sar~predvar or rps~predvar scatterplot
+### rps
+# Need to add forecasted rps & new year of predvar
+if(length(groups)==1){
+  fit_dat_fig_rps     <-rbind(fit_dat_g_rps[[1]][[1]],fit_dat_g_rps[[1]][[2]],fit_dat_g_rps[[1]][[3]])
+  fore_surv_g_rps     <-rbind(ageX_dat_rps[[1]])
+  fore_surv_g_rps$survival <-NA
+}
+if(length(groups)==2){
+  fit_dat_fig_rps      <-rbind(fit_dat_g_rps[[1]][[1]],fit_dat_g_rps[[1]][[2]],fit_dat_g_rps[[1]][[3]],
+                           fit_dat_g_rps[[2]][[1]],fit_dat_g_rps[[2]][[2]],fit_dat_g_rps[[2]][[3]])
+  fore_surv_g_rps <-rbind(ageX_dat_rps[[1]],ageX_dat_rps[[2]])
+  fore_surv_g_rps$survival <-NA
+}
+if(length(groups)==3){
+  fit_dat_fig_rps      <-rbind(fit_dat_g_rps[[1]][[1]],fit_dat_g_rps[[1]][[2]],fit_dat_g_rps[[1]][[3]],
+                           fit_dat_g_rps[[2]][[1]],fit_dat_g_rps[[2]][[2]],fit_dat_g_rps[[2]][[3]],
+                           fit_dat_g_rps[[3]][[1]],fit_dat_g_rps[[3]][[2]],fit_dat_g_rps[[3]][[3]])
+  fore_surv_g_rps <-rbind(ageX_dat_rps[[1]],ageX_dat_rps[[2]],ageX_dat_rps[[3]])
+  fore_surv_g_rps$survival <-NA
+}
+if(length(groups)==4){
+  fit_dat_fig_rps      <-rbind(fit_dat_g_rps[[1]][[1]],fit_dat_g_rps[[1]][[2]],fit_dat_g_rps[[1]][[3]],
+                           fit_dat_g_rps[[2]][[1]],fit_dat_g_rps[[2]][[2]],fit_dat_g_rps[[2]][[3]],
+                           fit_dat_g_rps[[3]][[1]],fit_dat_g_rps[[3]][[2]],fit_dat_g_rps[[3]][[3]],
+                           fit_dat_g_rps[[4]][[1]],fit_dat_g_rps[[4]][[2]],fit_dat_g_rps[[4]][[3]])
+  fore_surv_g_rps <-rbind(ageX_dat_rps[[1]],ageX_dat_rps[[2]],ageX_dat_rps[[3]],ageX_dat_rps[[4]])
+  fore_surv_g_rps$survival <-NA
+}
+
+for(g in 1:length(groups)){
+  for(a in 1:length(ages)){
+    fore_surv_g_rps[which(fore_surv_g_rps$Stock==groups[g] & fore_surv_g_rps$Age_Class==ages[a]),"survival"] <-as.numeric(rps_list_1[[g]][[a]])
+  }
+}
+
+if(length(groups)==2){
+  fore_surv_g_rps[,c("brood_yr","Age_Class","Mod_name","predvar","survival")] %>%
+    kbl(row.names = FALSE, caption = "Table 6. Predicted survival (rps) by age-class for the forecast year.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = 3, "HOR" = 3)) %>%
+    row_spec(seq(3, nrow(fore_surv_g_rps), 3), extra_css = "border-bottom: 1px solid;")
+}
+if(length(groups)==4){
+  fore_surv_g_rps[,c("brood_yr","Age_Class","Mod_name","predvar","survival")] %>%
+    kbl(row.names = FALSE, caption = "Table 6. Predicted survival (rps) by age-class for the forecast year.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR"  = nrow(fore_surv_g_rps[which(fore_surv_g_rps$Stock=="NOR"),]),
+                        "AP"  = nrow(fore_surv_g_rps[which(fore_surv_g_rps$Stock=="AP"),]),
+                        "WRH_sub"  = nrow(fore_surv_g_rps[which(fore_surv_g_rps$Stock=="WRH_sub"),]),
+                        "Hupp"  = nrow(fore_surv_g_rps[which(fore_surv_g_rps$Stock=="Hupp"),]))) %>%
+    row_spec(seq(3, nrow(fore_surv_g_rps), 3), extra_css = "border-bottom: 1px solid;")
+}
+  
+# fit_dat_fig_rps <-
+  ggplot()+
+    geom_point(data = fit_dat_fig_rps, aes(x = predvar, y = rps),pch=21,fill="black",size=2)+
+    geom_point(data = fore_surv_g_rps, aes(x = predvar, y = survival),pch=21,fill="green",size=5)+
+    geom_line(data = fit_dat_fig_rps, aes(x = predvar, y = rps_pred), color = "red", linewidth = 1) +
+    # geom_smooth(fits[["NOR"]][["age3"]][[best_age3_g[["NOR"]][2]]][[best_age3_g[["NOR"]][3]]]$fitted.values)
+    # geom_smooth(method = "pow", se = FALSE)
+    facet_wrap(Stock~Age_Class, scales="free", ncol=3)
+
+### sar
+# Need to add forecasted rps & new year of predvar
+fit_dat_fig_sar     <-rbind(fit_dat_g_sar[[1]][[1]],fit_dat_g_sar[[1]][[2]],fit_dat_g_sar[[1]][[3]])
+fore_surv_g_sar     <-rbind(ageX_dat_sar[[1]])
+fore_surv_g_sar$survival <-NA
+
+for(a in 1:length(ages)){
+  fore_surv_g_sar[which(fore_surv_g_sar$Stock=="NOR" & fore_surv_g_sar$Age_Class==ages[a]),"survival"] <-as.numeric(sar_list_1[["NOR"]][[a]])
+}
+
+fore_surv_g_sar[,c("brood_yr","Age_Class","Mod_name","predvar","survival")] %>%
+  kbl(row.names = FALSE, caption = "Table 6. Predicted survival (SAR) by age-class for the forecast year.",digits=3) %>%
+  kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+  pack_rows(index = c("NOR" = 3)) %>%
+  row_spec(seq(3, nrow(fore_surv_g_sar), 3), extra_css = "border-bottom: 1px solid;")
+
+ggplot()+
+  geom_point(data = fit_dat_fig_sar, aes(x = predvar, y = sar),pch=21,fill="black",size=2)+
+  geom_point(data = fore_surv_g_sar, aes(x = predvar, y = survival),pch=21,fill="green",size=5)+
+  geom_line(data = fit_dat_fig_sar, aes(x = predvar, y = sar_pred), color = "red", linewidth = 1) +
+  # geom_smooth(fits[["NOR"]][["age3"]][[best_age3_g[["NOR"]][2]]][[best_age3_g[["NOR"]][3]]]$fitted.values)
+  # geom_smooth(method = "pow", se = FALSE)
+  facet_wrap(Stock~Age_Class, scales="free", ncol=3)
+
+  
+# ########################## SAR Specific Figures #####################################
+# ## Age-3 SAR sibling
+# if(params$systems=="Puyallup River"){
+#   fit_dat_age3 <-cbind(
+#                   fits[["NOR"]][["age4"]][["SAR34"]][["linear"]]$model,
+#                   as.numeric(predict(fits[["NOR"]][["age4"]][["SAR34"]][["linear"]]))
+#                   )
+# }
+# if(params$systems=="White River"){
+#   fit_dat_age3 <-cbind(
+#                   fits[["NOR"]][["age3"]][["SAR23"]][["linear"]]$model,
+#                   as.numeric(predict(fits[["NOR"]][["age3"]][["SAR23"]][["linear"]]))
+#                   )
+# }
+# fit_dat_age3$Stock <-rep("NOR", nrow(fit_dat_age3))
+# fit_dat_age3$Age_Class <-rep("age3", nrow(fit_dat_age3))
+# fit_dat_age3$Mod_name <-rep("SAR23", nrow(fit_dat_age3))
+# colnames(fit_dat_age3) <-c("sar","predvar","sar_pred","Stock","Age_Class","Mod_name")
+# fore_surv_NOR_age3 <-dplyr::filter(fore_surv_g,Stock=="NOR" & Age_Class=="age3")
+# 
+# ### Age-4 SAR sibling
+# fit_dat_age4 <-cbind(
+#                 fits[["NOR"]][["age4"]][["SAR34"]][["linear"]]$model,
+#                 as.numeric(predict(fits[["NOR"]][["age4"]][["SAR34"]][["linear"]]))
+#                 )
+# fit_dat_age4$Stock <-rep("NOR", nrow(fit_dat_age4))
+# fit_dat_age4$Age_Class <-rep("age4", nrow(fit_dat_age4))
+# fit_dat_age4$Mod_name <-rep("SAR34", nrow(fit_dat_age4))
+# colnames(fit_dat_age4) <-c("sar","predvar","sar_pred","Stock","Age_Class","Mod_name")
+# fore_surv_NOR_age4 <-dplyr::filter(fore_surv_g,Stock=="NOR" & Age_Class=="age4")
+# 
+# ### Age-5 SAR sibling
+# fit_dat_age5 <-cbind(
+#                 fits[["NOR"]][["age5"]][["SAR45"]][["linear"]]$model,
+#                 as.numeric(predict(fits[["NOR"]][["age5"]][["SAR45"]][["linear"]]))
+#                 )
+# fit_dat_age5$Stock <-rep("NOR", nrow(fit_dat_age5))
+# fit_dat_age5$Age_Class <-rep("age5", nrow(fit_dat_age5))
+# fit_dat_age5$Mod_name <-rep("SAR45", nrow(fit_dat_age5))
+# colnames(fit_dat_age5) <-c("sar","predvar","sar_pred","Stock","Age_Class","Mod_name")
+# fore_surv_NOR_age5 <-dplyr::filter(fore_surv_g,Stock=="NOR" & Age_Class=="age5")
+# 
+# sar_fit_dat <-rbind(fit_dat_age3,fit_dat_age4,fit_dat_age5)
+# fore_surv_NOR <-rbind(fore_surv_NOR_age3,fore_surv_NOR_age4,fore_surv_NOR_age5)
+# 
+# fig_save <-ggplot()+
+#   geom_point(data = sar_fit_dat, aes(x = predvar, y = sar),pch=21,fill="black",size=2)+
+#   geom_point(data = fore_surv_NOR, aes(x = predvar, y = survival),pch=21,fill="green",size=5)+
+#   geom_line(data = sar_fit_dat, aes(x = predvar, y = sar_pred), color = "red", linewidth = 1) +
+#   # geom_smooth(fits[["NOR"]][["age3"]][[best_age3_g[["NOR"]][2]]][[best_age3_g[["NOR"]][3]]]$fitted.values)
+#   # geom_smooth(method = "pow", se = FALSE)
+#   xlab("SAR_age-1")+
+#   ylab("SAR_age")+
+#   facet_wrap(Stock~Age_Class, scales="free", ncol=3)
+# 
+# ggsave(paste0(drive_syst_fore,"/white_sar_sib.pdf"), width = 8, height = 4)
+# 
+# ### Age-3 SAR climate
+# fit_dat_age3_clim <-cbind(
+#                 fits[["NOR"]][["age3"]][["sar~NPGOJM"]][["linear"]]$model,
+#                 as.numeric(predict(fits[["NOR"]][["age3"]][["sar~NPGOJM"]][["linear"]]))
+#                 )
+# fit_dat_age3_clim$Stock <-rep("NOR", nrow(fit_dat_age3_clim))
+# fit_dat_age3_clim$Age_Class <-rep("age3", nrow(fit_dat_age3_clim))
+# fit_dat_age3_clim$Mod_name <-rep("sar~NPGOJM", nrow(fit_dat_age3_clim))
+# colnames(fit_dat_age3_clim) <-c("sar","predvar","sar_pred","Stock","Age_Class","Mod_name")
+# 
+# age3_dat <-data.frame(
+#   predvar     = surv_hab[which(surv_hab$brood_yr==(fore_yr-3)),"NPGOJM"],
+#   surv_metric = "sar",
+#   brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-3)$brood_yr,
+#   Stock       = "NOR",
+#   Age_Class   = "age3",
+#   Mod_name    = "sar~NPGOJM"
+# )
+# # lin
+# fit_select    <-fits[["NOR"]][["age3"]][["sar~NPGOJM"]]
+# clim_sar_age3 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age3_dat$predvar)))
+# fore_surv_NOR_age3_clim <-dplyr::filter(fore_surv_g,Stock=="NOR" & Age_Class=="age3")
+# fore_surv_NOR_age3_clim$predvar <-age3_dat$predvar
+# fore_surv_NOR_age3_clim$survival <-clim_sar_age3
+# 
+# ### Age-4 SAR climate
+# fit_dat_age4_clim <-cbind(
+#                 fits[["NOR"]][["age4"]][["sar~NPGOJM"]][["linear"]]$model,
+#                 as.numeric(predict(fits[["NOR"]][["age4"]][["sar~NPGOJM"]][["linear"]]))
+#                 )
+# fit_dat_age4_clim$Stock <-rep("NOR", nrow(fit_dat_age4_clim))
+# fit_dat_age4_clim$Age_Class <-rep("age4", nrow(fit_dat_age4_clim))
+# fit_dat_age4_clim$Mod_name <-rep("sar~NPGOJM", nrow(fit_dat_age4_clim))
+# colnames(fit_dat_age4_clim) <-c("sar","predvar","sar_pred","Stock","Age_Class","Mod_name")
+# 
+# age4_dat <-data.frame(
+#   predvar     = surv_hab[which(surv_hab$brood_yr==(fore_yr-4)),"NPGOJM"],
+#   surv_metric = "sar",
+#   brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-4)$brood_yr,
+#   Stock       = "NOR",
+#   Age_Class   = "age4",
+#   Mod_name    = "sar~NPGOJM"
+# )
+# # lin
+# fit_select    <-fits[["NOR"]][["age4"]][["sar~NPGOJM"]]
+# clim_sar_age4 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age4_dat$predvar)))
+# fore_surv_NOR_age4_clim <-dplyr::filter(fore_surv_g,Stock=="NOR" & Age_Class=="age4")
+# fore_surv_NOR_age4_clim$predvar <-age4_dat$predvar
+# fore_surv_NOR_age4_clim$survival <-clim_sar_age4
+# 
+# ### Age-5 SAR climate
+# fit_dat_age5_clim <-cbind(
+#                 fits[["NOR"]][["age5"]][["sar~NPGOJM"]][["linear"]]$model,
+#                 as.numeric(predict(fits[["NOR"]][["age5"]][["sar~NPGOJM"]][["linear"]]))
+#                 )
+# fit_dat_age5_clim$Stock <-rep("NOR", nrow(fit_dat_age5_clim))
+# fit_dat_age5_clim$Age_Class <-rep("age5", nrow(fit_dat_age5_clim))
+# fit_dat_age5_clim$Mod_name <-rep("sar~NPGOJM", nrow(fit_dat_age5_clim))
+# colnames(fit_dat_age5_clim) <-c("sar","predvar","sar_pred","Stock","Age_Class","Mod_name")
+# 
+# age5_dat <-data.frame(
+#   predvar     = surv_hab[which(surv_hab$brood_yr==(fore_yr-5)),"NPGOJM"],
+#   surv_metric = "sar",
+#   brood_yr    = dplyr::filter(N_at_age2_g[[g]],brood_yr==fore_yr-5)$brood_yr,
+#   Stock       = "NOR",
+#   Age_Class   = "age5",
+#   Mod_name    = "sar~NPGOJM"
+# )
+# # lin
+# fit_select    <-fits[["NOR"]][["age5"]][["sar~NPGOJM"]]
+# clim_sar_age5 <-as.numeric(predict(fit_select$linear, newdata = data.frame(cov = age5_dat$predvar)))
+# fore_surv_NOR_age5_clim <-dplyr::filter(fore_surv_g,Stock=="NOR" & Age_Class=="age5")
+# fore_surv_NOR_age5_clim$predvar <-age5_dat$predvar
+# fore_surv_NOR_age5_clim$survival <-clim_sar_age5
+# 
+# sar_fit_dat_clim <-rbind(fit_dat_age3_clim,fit_dat_age4_clim,fit_dat_age5_clim)
+# fore_surv_NOR_clim <-rbind(fore_surv_NOR_age3_clim,fore_surv_NOR_age4_clim,fore_surv_NOR_age5_clim)
+# 
+# fig_save <-ggplot()+
+#   geom_point(data = sar_fit_dat_clim, aes(x = predvar, y = sar),pch=21,fill="black",size=2)+
+#   geom_point(data = fore_surv_NOR_clim, aes(x = predvar, y = survival),pch=21,fill="green",size=5)+
+#   geom_line(data = sar_fit_dat_clim, aes(x = predvar, y = sar_pred), color = "red", linewidth = 1) +
+#   # geom_smooth(fits[["NOR"]][["age3"]][[best_age3_g[["NOR"]][2]]][[best_age3_g[["NOR"]][3]]]$fitted.values)
+#   # geom_smooth(method = "pow", se = FALSE)
+#   xlab("NPGOJM")+
+#   ylab("SAR_age")+
+#   facet_wrap(Stock~Age_Class, scales="free", ncol=3)
+# 
+# ggsave(paste0(drive_syst_fore,"/white_sar_NPGOJM.pdf"), width = 8, height = 4)
+
+```  
+<br>
+<br>
+
+``` {r surv_fore_fig, out.width=c('100%','60%'), fig.cap = c("**Figure 5.** Recruits-per-spawner calculated for ages 3-5 over time. The most current year plotted for each age-class (large circles) show the forecasted rps value used to calculate forecasted escapement.","**Figure 6.** Smolt-adult-return calculated for ages 3-5 over time. The most current year plotted for each age-class (large circles) show the forecasted SAR value used to calculate forecasted escapement."), fig.topcaption = TRUE}
+##### Plot rps by age-class & stock
+sar_g_long <-tidyr::gather(sar_df_g, Age_Class, sar, age3_sar,age4_sar,age5_sar)
+sar_temp   <-sar_g_long[-which(sar_g_long$Age_Class=="age5_sar" & sar_g_long$brood_yr>=(fore_yr-5)),]
+sar_temp2     <-sar_temp[-which(sar_temp$Age_Class=="age4_sar" & sar_temp$brood_yr>=(fore_yr-4)),]
+sar_ts     <-sar_temp2[-which(sar_temp2$Age_Class=="age3_sar" & sar_temp2$brood_yr>=(fore_yr-3)),]
+sar_ts <-sar_ts[,-2]
+colnames(sar_ts)[4] <-"survival"
+colnames(rps_ts)[4] <-"survival"
+
+sar_ts$metric <-rep("sar",nrow(sar_ts))
+sar_ts$Age_Class <-plyr::revalue(sar_ts$Age_Class, c("age3_sar"="age3", "age4_sar"="age4", "age5_sar"="age5"))
+sar_ts_fig <-rbind(sar_ts[,c("brood_yr","Stock","Age_Class","survival")],dplyr::filter(fore_surv_g_sar,surv_metric=="sar")[,c("brood_yr","Stock","Age_Class","survival")])
+rps_ts$metric <-rep("rps",nrow(rps_ts))
+rps_ts_fig <-rbind(rps_ts[,c("brood_yr","Stock","Age_Class","survival")],dplyr::filter(fore_surv_g_rps,surv_metric=="rps")[,c("brood_yr","Stock","Age_Class","survival")])
+
+surv_ts <-rbind(rps_ts,sar_ts)
+
+# rps
+ggplot()+
+  geom_line(data=rps_ts_fig,aes(x=as.numeric(brood_yr),y=survival,group=Age_Class,color=Age_Class))+
+  geom_point(data=dplyr::filter(fore_surv_g_rps,surv_metric=="rps"),aes(x=as.numeric(brood_yr),y=survival,group=Age_Class,fill=Age_Class),size=2,pch=21,color="black")+
+  facet_wrap(Stock~.,ncol=1,scales="free")+
+  xlab("Brood Year")+
+  ylab("Recruits-per-spawner")+
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+
+# sar
+ggplot()+
+  geom_line(data=sar_ts_fig,aes(x=as.numeric(brood_yr),y=survival,group=Age_Class,color=Age_Class))+
+  geom_point(data=dplyr::filter(fore_surv_g_sar,surv_metric=="sar"),aes(x=as.numeric(brood_yr),y=survival,group=Age_Class,fill=Age_Class),size=2,pch=21,color="black")+
+  # facet_wrap(Stock~.,ncol=1,scales="free")+
+  xlab("Brood Year")+
+  ylab("Smolt-adult-return")+
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+
+# ggsave(paste0(drive_syst_fore,"/white_sar_ts.pdf"), width = 8, height = 4)
+
+
+# surv_ts_fore <-rbind(surv_ts, fore_surv_g[,c("brood_yr","Stock","Age_Class","survival")])
+# surv_ts_fig  <-dplyr::filter(surv_ts_fore, Age_Class!="total_rps")
+# surv_fore    <-fore_surv_g[,c("brood_yr","Stock","Age_Class","survival")]
+```
+<br>
+<br>
+
+# **Summarize results** 
+
+* (rps) Forecast-at-age = (ETRS_at_age *X* rps_predicted) for each group
+* (SAR) Forecast-at-age = (Smolt_abundance *X* SAR_predicted) for NOR stock
+<br>
+<br>
+
+``` {r makeDFs_writeCSVs}  
+forecasts_rps <-list()
+forecasts_sar <-list()
+
+for(g in 1:length(groups)){
+  ####################################################################
+  ##### Summarize NOR forecasts
+  if(params$systems=="White River"){
+    if(groups[g]=="AP"){     rel_g <-"AP_releases"}
+    if(groups[g]=="WRH_sub"){rel_g <-"WRH_releases"}
+    if(groups[g]=="Hupp"){   rel_g <-"Hupp_releases"}
+    if(groups[g]!="NOR"){
+      esc_syst           <-c(hatch_rel[which(hatch_rel$brood_yr==(max(as.numeric(N_at_age3$brood_yr))+1)),rel_g],
+                             hatch_rel[which(hatch_rel$brood_yr==(max(as.numeric(N_at_age3$brood_yr)))),rel_g],
+                             hatch_rel[which(hatch_rel$brood_yr==(max(as.numeric(N_at_age3$brood_yr))-1)),rel_g])
+    }
+    if(groups[g]=="NOR"){
+      esc_syst           <-c(dplyr::filter(run_recon,return_yr==(max(as.numeric(N_at_age3$brood_yr))+1))$Total_passed,
+                             dplyr::filter(run_recon,return_yr==(max(as.numeric(N_at_age3$brood_yr))))$Total_passed,
+                             dplyr::filter(run_recon,return_yr==(max(as.numeric(N_at_age3$brood_yr))-1))$Total_passed)
+      smolt_syst         <-c(dplyr::filter(smolt,brood_yr==(max(as.numeric(N_at_age3$brood_yr))+1))$smolt,
+                             dplyr::filter(smolt,brood_yr==(max(as.numeric(N_at_age3$brood_yr))))$smolt,
+                             dplyr::filter(smolt,brood_yr==(max(as.numeric(N_at_age3$brood_yr))-1))$smolt)
+      if(best_age3_g[[1]][1]=="SAR"){esc_syst[1] <-smolt_syst[1]}
+      if(best_age4_g[[1]][1]=="SAR"){esc_syst[2] <-smolt_syst[2]}
+      if(best_age5_g[[1]][1]=="SAR"){esc_syst[3] <-smolt_syst[3]}
+    }
+  }
+  if(params$systems=="Puyallup River"){
+    if(groups[g]=="NOR"){
+      esc_syst           <-c(dplyr::filter(esc,return_yr==(max(as.numeric(N_at_age3$brood_yr))+1))$total_natural_spawners,
+                             dplyr::filter(esc,return_yr==(max(as.numeric(N_at_age3$brood_yr))))$total_natural_spawners,
+                             dplyr::filter(esc,return_yr==(max(as.numeric(N_at_age3$brood_yr))-1))$total_natural_spawners)
+      smolt_syst         <-c(dplyr::filter(smolt,brood_yr==(max(as.numeric(N_at_age3$brood_yr))+1))$smolt,
+                             dplyr::filter(smolt,brood_yr==(max(as.numeric(N_at_age3$brood_yr))))$smolt,
+                             dplyr::filter(smolt,brood_yr==(max(as.numeric(N_at_age3$brood_yr))-1))$smolt)
+      if(best_age3_g[[1]][1]=="SAR"){esc_syst[1] <-smolt_syst[1]}
+      if(best_age4_g[[1]][1]=="SAR"){esc_syst[2] <-smolt_syst[2]}
+      if(best_age5_g[[1]][1]=="SAR"){esc_syst[3] <-smolt_syst[3]}
+    }
+    if(groups[g]=="HOR"){
+      esc_syst           <-c(dplyr::filter(hatch_rel,brood_yr==(max(as.numeric(N_at_age3$brood_yr))+1))$total_releases,
+                             dplyr::filter(hatch_rel,brood_yr==(max(as.numeric(N_at_age3$brood_yr))))$total_releases,
+                             dplyr::filter(hatch_rel,brood_yr==(max(as.numeric(N_at_age3$brood_yr))-1))$total_releases)
+    }
+  }
+
+  # rps forecast
+  rps_age3 <-as.numeric(rps_list_1[[g]][[1]])
+  rps_age4 <-as.numeric(rps_list_1[[g]][[2]])
+  rps_age5 <-as.numeric(rps_list_1[[g]][[3]])
+
+  forecast_df_rps <-data.frame(
+    brood_yr = c(fore_yr-3,fore_yr-4,fore_yr-5),
+    age      = c(3,4,5),
+    esc      = esc_syst,
+    rps      = c(rps_age3,rps_age4,rps_age5),
+    mod_name = c(best_age3_g_rps[[g]][2],best_age4_g_rps[[g]][2],best_age5_g_rps[[g]][2]))
+  forecast_df_rps$forecast <-forecast_df_rps$rps*forecast_df_rps$esc
+  
+  # sar forecast
+  sar_age3 <-as.numeric(dplyr::filter(fore_surv_g_sar, surv_metric=="sar" & Age_Class=="age3")$survival)
+  sar_age4 <-as.numeric(dplyr::filter(fore_surv_g_sar, surv_metric=="sar" & Age_Class=="age4")$survival)
+  # fore_surv_g[is.na(fore_surv_g)] <-0
+  sar_age5 <-as.numeric(dplyr::filter(fore_surv_g_sar, surv_metric=="sar" & Age_Class=="age5")$survival)
+
+  if(groups[g]=="NOR"){
+    forecast_df_sar <-data.frame(
+      brood_yr = c(fore_yr-3,fore_yr-4,fore_yr-5),
+      age      = c(3,4,5),
+      smolt    = smolt_syst,
+      sar      = c(sar_age3,sar_age4,sar_age5),
+      mod_name = c(best_age3_g_sar[[g]][2],best_age4_g_sar[[g]][2],best_age5_g_sar[[g]][2]))
+    forecast_df_sar$forecast <-forecast_df_sar$sar*forecast_df_sar$smolt
+  }
+  if(groups[g]=="NOR"){forecasts_rps[[g]]     <-forecast_df_rps}
+  if(groups[g]=="AP"){forecasts_rps[[g]]      <-forecast_df_rps}
+  if(groups[g]=="WRH_sub"){forecasts_rps[[g]] <-forecast_df_rps}
+  if(groups[g]=="Hupp"){forecasts_rps[[g]]    <-forecast_df_rps}
+  if(groups[g]=="HOR"){forecasts_rps[[g]]     <-forecast_df_rps}
+  if(groups[g]=="NOR"){forecasts_sar[[g]]     <-forecast_df_sar}
+  if(groups[g]=="AP"){forecasts_sar[[g]]      <-forecast_df_sar}
+  if(groups[g]=="WRH_sub"){forecasts_sar[[g]] <-forecast_df_sar}
+  if(groups[g]=="Hupp"){forecasts_sar[[g]]    <-forecast_df_sar}
+  # if(groups[g]=="HOR"){forecasts_sar[[g]]     <-forecast_df_sar}
+}
+names(forecasts_rps) <-groups
+names(forecasts_sar) <-"NOR"
+  
+####################################################################
+### Write next year's forecast input data files ###
+if(params$systems=="White River"){
+  write.csv(props_ts_sys_df,paste0(drive_syst_fore_next,"/age_props.csv"),row.names=FALSE)
+  write.csv(counts[,1:17],paste0(drive_syst_fore_next,"/counts.csv"),row.names=FALSE)
+  write.csv(hatch_rel[,1:9],paste0(drive_syst_fore_next,"/hatchery_releases.csv"),row.names=FALSE)
+  write.csv(run_recon,paste0(drive_syst_fore_next,"/run_reconstruction.csv"),row.names=FALSE)
+}
+if(params$systems=="Puyallup River"){
+  write.csv(props_ts_sys_df,paste0(drive_syst_fore_next,"/age_props.csv"),row.names=FALSE)
+  write.csv(esc[,1:7],paste0(drive_syst_fore_next,"/hatchery_returns.csv"),row.names=FALSE)
+  write.csv(hatch_rel,paste0(drive_syst_fore_next,"/hatchery_releases.csv"),row.names=FALSE)
+  write.csv(run_recon,paste0(drive_syst_fore_next,"/run_reconstruction.csv"),row.names=FALSE)
+}
+
+####################################################################
+##### Generate table for forecasted rps escapement
+fore_df_g1_rps           <-cbind(forecasts_rps[[1]],rep(groups[1],length(forecasts_rps[[1]]$brood_yr)))
+colnames(fore_df_g1_rps) <-c(colnames(fore_df_g1_rps)[-7],"Stock")
+
+if(length(groups)>=2){
+  fore_df_g2_rps           <-cbind(forecasts_rps[[2]],rep(groups[2],length(forecasts_rps[[2]]$brood_yr)))
+  colnames(fore_df_g2_rps) <-c(colnames(fore_df_g2_rps)[-7],"Stock")
+  fore_df_g_rps            <-rbind(fore_df_g1_rps,fore_df_g2_rps)
+}
+if(length(groups)>=3){
+  fore_df_g3_rps           <-cbind(forecasts_rps[[3]],rep(groups[3],length(forecasts_rps[[3]]$brood_yr)))
+  colnames(fore_df_g3_rps) <-c(colnames(fore_df_g3_rps)[-7],"Stock")
+  fore_df_g_rps            <-rbind(fore_df_g_rps,fore_df_g3_rps)
+}
+if(length(groups)>=4){
+  fore_df_g4_rps           <-cbind(forecasts_rps[[4]],rep(groups[4],length(forecasts_rps[[4]]$brood_yr)))
+  colnames(fore_df_g4_rps) <-c(colnames(fore_df_g4_rps)[-7],"Stock")
+  fore_df_g_rps            <-rbind(fore_df_g_rps,fore_df_g4_rps)
+}
+
+if(length(groups)==2){
+  fore_df_g_rps[,1:6] %>%
+    kbl(row.names = FALSE, caption = "Table 7. RPS-forecasted escapement for ages 3-5 across natural- and hatchery-origin stocks.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = length(forecasts_rps[[1]]$brood_yr), "HOR" = length(forecasts_rps[[2]]$brood_yr)))
+}
+if(length(groups)==4){
+  fore_df_g_rps[,1:6] %>%
+    kbl(row.names = FALSE, caption = "Table 7. RPS-forecasted escapement for ages 3-5 across natural- and hatchery-origin stocks.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = length(forecasts_rps[[1]]$brood_yr), 
+                        "AP" = length(forecasts_rps[[2]]$brood_yr),
+                        "WRH_sub" = length(forecasts_rps[[3]]$brood_yr),
+                        "Hupp" = length(forecasts_rps[[4]]$brood_yr)))
+}
+
+####################################################################
+##### Generate table for forecasted sar escapement
+fore_df_g_sar           <-cbind(forecasts_sar[[1]],rep(groups[1],length(forecasts_sar[[1]]$brood_yr)))
+colnames(fore_df_g_sar) <-c(colnames(fore_df_g_sar)[-7],"Stock")
+
+# if(length(groups)>=2){
+#   fore_df_g2           <-cbind(forecasts_sar[[2]],rep(groups[2],length(forecasts_sar[[2]]$brood_yr)))
+#   colnames(fore_df_g2) <-c(colnames(fore_df_g2)[-7],"Stock")
+#   fore_df_g            <-rbind(fore_df_g1,fore_df_g2)
+# }
+# if(length(groups)>=3){
+#   fore_df_g3           <-cbind(forecasts_sar[[3]],rep(groups[3],length(forecasts_sar[[3]]$brood_yr)))
+#   colnames(fore_df_g3) <-c(colnames(fore_df_g3)[-7],"Stock")
+#   fore_df_g            <-rbind(fore_df_g,fore_df_g3)
+# }
+# if(length(groups)>=4){
+#   fore_df_g4           <-cbind(forecasts_sar[[4]],rep(groups[4],length(forecasts_sar[[4]]$brood_yr)))
+#   colnames(fore_df_g4) <-c(colnames(fore_df_g4)[-7],"Stock")
+#   fore_df_g            <-rbind(fore_df_g,fore_df_g4)
+# }
+
+if(length(groups)==2){
+  fore_df_g_sar %>%
+    filter(Stock=="NOR") %>%
+    kbl(row.names = FALSE, caption = "Table 8. SAR-forecasted escapement for ages 3-5 across natural- and hatchery-origin stocks.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = length(forecasts_sar[[1]]$brood_yr)))
+}
+if(length(groups)==4){
+  fore_df_g_sar %>%
+    filter(Stock=="NOR") %>%
+    kbl(row.names = FALSE, caption = "Table 8. SAR-forecasted escapement for ages 3-5 across natural- and hatchery-origin stocks.",digits=3) %>%
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
+    pack_rows(index = c("NOR" = length(forecasts_sar[[1]]$brood_yr)))
+}
+
+```
+
+
+``` {r N_at_fore, out.width=c('100%','60%'), fig.cap = c("**Figure 7a.** Numbers-at-age over time for each stock. The most current year plotted for each age-class (large circles) show the forecasted N_at (i.e., escapement) using the top-ranked rps models.","**Figure 7b.** Numbers-at-age over time for each stock. The most current year plotted for each age-class (large circles) show the forecasted N_at (i.e., escapement) using the top-ranked SAR models."), fig.topcaption = TRUE, fig.height=7, fig.width=8}
+##### RPS N_at
+N_age3_fore_rps           <-fore_df_g_rps[which(fore_df_g_rps$age==3),c("brood_yr","Stock","age","forecast")]
+N_age3_fore_rps$age       <-rep("N_at_age3",nrow(N_age3_fore_rps))
+colnames(N_age3_fore_rps) <-colnames(N_at_g)
+
+N_age4_fore_rps           <-fore_df_g_rps[which(fore_df_g_rps$age==4),c("brood_yr","Stock","age","forecast")]
+N_age4_fore_rps$age       <-rep("N_at_age4",nrow(N_age4_fore_rps))
+colnames(N_age4_fore_rps) <-colnames(N_at_g)
+
+N_age5_fore_rps           <-fore_df_g_rps[which(fore_df_g_rps$age==5),c("brood_yr","Stock","age","forecast")]
+N_age5_fore_rps$age       <-rep("N_at_age5",nrow(N_age5_fore_rps))
+colnames(N_age5_fore_rps) <-colnames(N_at_g)
+
+N_at_rps_new           <-rbind(N_at_g,N_age3_fore_rps,N_age4_fore_rps,N_age5_fore_rps)
+N_at_fore_rps          <-rbind(N_age3_fore_rps,N_age4_fore_rps,N_age5_fore_rps)
+N_at_fore_rps$brood_yr <-as.character(N_at_fore_rps$brood_yr)
+
+ggplot()+
+  geom_line(data=N_at_rps_new,aes(x=brood_yr,y=N,group=Age_Class,color=Age_Class))+
+  geom_point(data=N_at_fore_rps,aes(x=brood_yr,y=N,group=Age_Class,fill=Age_Class),size=2,pch=21,color="black")+
+  facet_wrap(.~Stock,ncol=1,scales = "free")+
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+
+##### SAR N_at
+N_age3_fore_sar           <-fore_df_g_sar[which(fore_df_g_sar$age==3),c("brood_yr","Stock","age","forecast")]
+N_age3_fore_sar$age       <-rep("N_at_age3",nrow(N_age3_fore_sar))
+colnames(N_age3_fore_sar) <-colnames(N_at_g)
+
+N_age4_fore_sar           <-fore_df_g_sar[which(fore_df_g_sar$age==4),c("brood_yr","Stock","age","forecast")]
+N_age4_fore_sar$age       <-rep("N_at_age4",nrow(N_age4_fore_sar))
+colnames(N_age4_fore_sar) <-colnames(N_at_g)
+
+N_age5_fore_sar           <-fore_df_g_sar[which(fore_df_g_sar$age==5),c("brood_yr","Stock","age","forecast")]
+N_age5_fore_sar$age       <-rep("N_at_age5",nrow(N_age5_fore_sar))
+colnames(N_age5_fore_sar) <-colnames(N_at_g)
+
+N_at_sar_new           <-rbind(N_at_g,N_age3_fore_sar,N_age4_fore_sar,N_age5_fore_sar)
+N_at_fore_sar          <-rbind(N_age3_fore_sar,N_age4_fore_sar,N_age5_fore_sar)
+N_at_fore_sar$brood_yr <-as.character(N_at_fore_sar$brood_yr)
+
+ggplot()+
+  geom_line(data=dplyr::filter(N_at_sar_new, Stock == "NOR"),aes(x=brood_yr,y=N,group=Age_Class,color=Age_Class))+
+  geom_point(data=N_at_fore_sar,aes(x=brood_yr,y=N,group=Age_Class,fill=Age_Class),size=2,pch=21,color="black")+
+  facet_wrap(.~Stock,ncol=1,scales = "free")+
+  theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+# 
+# library(plotly)
+# WDFWcolors1 <- c("#008aea", "#002640", "#F15D43")
+# # # Create a custom theme for ggplots
+# customtheme <- theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1),
+#                      axis.text.y = element_text(size = 10),
+#                      axis.title.x = element_text(size = 12),
+#                      axis.title.y = element_text(size = 12),
+#                      legend.text = element_text(size = 10),
+#                      panel.grid.major = element_blank(),
+#                      panel.grid.minor = element_blank(),
+#                      panel.background = element_blank(),
+#                      axis.line = element_line(colour = "#003F6B"))
+# 
+# ggplotly(ggplot() +
+#            geom_line(data = N_at_new,aes(x=brood_yr,y=N,group=Age_Class,color=Age_Class),linewidth = 1) +
+#            geom_point(data=N_at_fore,aes(x=brood_yr,y=N,group=Age_Class),size=2,color="black") +
+#            theme_classic() +
+#            xlab("Brood Year") +
+#            ylab("Numbers-at-age") +
+#            labs(color = "Age Class") +
+#            facet_wrap(.~Stock,ncol=1,scales = "free_y")+
+#            scale_color_manual(values = WDFWcolors1)+
+#            # scale_x_continuous(breaks = breaks, labels = labels) +
+#            # scale_y_continuous(breaks = seq(0, max(sort(unique(ACPcatch$`CPUE (6 sets)`))), by = 200)) +
+#            customtheme)
+
+```
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
