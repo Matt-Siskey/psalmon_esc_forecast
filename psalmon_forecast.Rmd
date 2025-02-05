@@ -1164,13 +1164,13 @@ for(g in 1:length(groups)){
   clim_age3_c <-list()
   clim_age3   <-list()
   for(c in 1:length(cov)){
-    dat <-as.data.frame(cbind(surv_hab_merge[,rps_syst_id[1]],surv_hab_merge[,cov[c]]))
-    colnames(dat) <-c("rps","cov")
-    
-    clim3_lin <-lm(rps~cov,data=dat) # Linear
-    clim_age3_c[[1]] <-clim3_lin
+    dat                <-as.data.frame(cbind(surv_hab_merge[,rps_syst_id[1]],
+                                             surv_hab_merge[,cov[c]]))
+    colnames(dat)      <-c("rps","cov")
+    clim3_lin          <-lm(rps~cov,data=dat) # Linear
+    clim_age3_c[[1]]   <-clim3_lin
     names(clim_age3_c) <-c("linear")
-    clim_age3[[c]] <-clim_age3_c
+    clim_age3[[c]]     <-clim_age3_c
   }
   names(clim_age3) <-cov
   
@@ -1178,13 +1178,13 @@ for(g in 1:length(groups)){
   clim_age4_c <-list()
   clim_age4   <-list()
   for(c in 1:length(cov)){
-    dat <-as.data.frame(cbind(surv_hab_merge[,rps_syst_id[2]],surv_hab_merge[,cov[c]]))
-    colnames(dat) <-c("rps","cov")
-    
-    clim4_lin <-lm(rps~cov,data=dat) # Linear
-    clim_age4_c[[1]] <-clim4_lin
+    dat                <-as.data.frame(cbind(surv_hab_merge[,rps_syst_id[2]],
+                                             surv_hab_merge[,cov[c]]))
+    colnames(dat)      <-c("rps","cov")
+    clim4_lin          <-lm(rps~cov,data=dat) # Linear
+    clim_age4_c[[1]]   <-clim4_lin
     names(clim_age4_c) <-c("linear")
-    clim_age4[[c]] <-clim_age4_c
+    clim_age4[[c]]     <-clim_age4_c
   }
   names(clim_age4) <-cov
   
