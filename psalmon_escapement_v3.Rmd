@@ -16,7 +16,7 @@ output:
       collapsed: false
       smooth_scroll: true
 params:
-  current_year: "2023"
+  current_year: "2024"
   sp: "Chinook" # "Chinook" "Coho" "Steelhead"
   system: "Puyallup River" # "Puyallup River" "South Sound" "East Kitsap"
 title: "**`r params$current_year` `r params$system` `r params$sp` Extreme Terminal Run Size**"
@@ -30,75 +30,29 @@ title: "**`r params$current_year` `r params$system` `r params$sp` Extreme Termin
    });
 </script>
 ```
-
-------------------------------------------------------------------------
-Last Updated `r format(Sys.time(), '%m/%d/%Y')`.
-------------------------------------------------------------------------
+|                                                  |
+|:-------------------------------------------------|
+| Last Updated `r format(Sys.time(), '%m/%d/%Y')`. |
 
 # **Background & Setup**
 
----
+------------------------------------------------------------------------
 
-Washington Department of Fish and Wildlife (WDFW) and tribal co-managing agencies (PTI, MIT, Suquamish) conduct spawning ground surveys for Chinook, coho, chum, and pink salmon to count the number of live fish, dead fish, and redds. These data are used to estimate extreme terminal run size (ETRS) for each return year. Dead fish are sampled for mark-type and scanned for coded wire tag detetcion in order to estimate system-specific mark-rate; however, there are often years with small mark-type sample sizes (n < 10), requiring the use of basin-wide mark rate estimates to split ETRS into stock-specific ETRS (i.e., natural-origin-returns (NOR) and hatchery-origin returns (HOR)). For Chinook salmon, redd count-based methodology is used to estimate ETRS in even years, where the total number of redds is multiplied by the assumed number of fish present on the redd (2.5 fish per redd). In odd years, pink salmon returns are often large and thus preclude the visual identification of redds, so an area-under-the-curve (AUC) methodology is used to esitmate ETRS. For coho salmon, the AUC methodology is used to estimate ETRS for each return year.
+Washington Department of Fish and Wildlife (WDFW) and tribal co-managing agencies (PTI, MIT, Suquamish) conduct spawning ground surveys for Chinook, coho, chum, and pink salmon to count the number of live fish, dead fish, and redds. These data are used to estimate extreme terminal run size (ETRS) for each return year. Dead fish are sampled for mark-type and scanned for coded wire tag detetcion in order to estimate system-specific mark-rate; however, there are often years with small mark-type sample sizes (n \< 10), requiring the use of basin-wide mark rate estimates to split ETRS into stock-specific ETRS (i.e., natural-origin-returns (NOR) and hatchery-origin returns (HOR)). For Chinook salmon, redd count-based methodology is used to estimate ETRS in even years, where the total number of redds is multiplied by the assumed number of fish present on the redd (2.5 fish per redd). In odd years, pink salmon returns are often large and thus preclude the visual identification of redds, so an area-under-the-curve (AUC) methodology is used to esitmate ETRS. For coho salmon, the AUC methodology is used to estimate ETRS for each return year.
 
 This is a generalized script that calculates stock-specific ETRS for Chinook, coho, and pink salmon across various systems surveyed in Disctrict 11 (i.e., Puyallup, East Kitsap, and South Sound) for the current return year. The approach taken attempts to replicate the traditional Excel workbook approach that has been used in past assessments. All analyses require R software [**(link)**](https://cran.r-project.org/) (v4.2.3) for data processing and summarizing results. At the top, we set Knitr options for output formatting and designate current year (for calculations) and forecast year (to direct file-writing). The top chunk also loads all packages required by the script and designates working directories or creates them if necessary.
 
 The current parameterization of this script calculates ETRS for the following species using spawning ground survey indices from the listed systems:
 
-`r if(params$sp=="Chinook" & params$system=="Puyallup River"){"
-  * Chinook
-    + Puyallup River
-      * Boise Creek
-      * Canyon Falls
-      * Clear Creek
-      * Fennel Creek
-      * Kapowsin Creek
-      * Salmon Creek + Trib
-      * South Prairie Creek
-      * Wilkeson Creek
-    + White River
-"}`
+`r if(params$sp=="Chinook" & params$system=="Puyallup River"){"   * Chinook     + Puyallup River       * Boise Creek       * Canyon Falls       * Clear Creek       * Fennel Creek       * Kapowsin Creek       * Salmon Creek + Trib       * South Prairie Creek       * Wilkeson Creek     + White River "}`
 
-`r if(params$sp=="Coho" & params$system=="Puyallup River"){"
-  * Coho
-    + Puyallup River
-      * Canyon Falls
-      * Coal Mine
-      * Fennel Creek (lower section)
-      * Fiske Creek
-      * Spiketon
-"}`
+`r if(params$sp=="Coho" & params$system=="Puyallup River"){"   * Coho     + Puyallup River       * Canyon Falls       * Coal Mine       * Fennel Creek (lower section)       * Fiske Creek       * Spiketon "}`
 
-`r if(params$sp=="Coho" & params$system=="East Kitsap"){"
-  * Coho
-    + East Kitsap
-      * Salmonberry      (15.0188; WDFW;   RM 1.6-2.1)
-      * Blackjack        (15.0203; Tribes; RM 5.2-6.3)
-      * Little Blackjack (15.0206; WDFW;   RM 0.4-1.0)
-      * Chico-Wildcat    (15.0229; Tribes; RM 2.6-5.0)
-      * Lost             (15.0234; Tribes; RM 0.0-1.9)
-"}`
+`r if(params$sp=="Coho" & params$system=="East Kitsap"){"   * Coho     + East Kitsap       * Salmonberry      (15.0188; WDFW;   RM 1.6-2.1)       * Blackjack        (15.0203; Tribes; RM 5.2-6.3)       * Little Blackjack (15.0206; WDFW;   RM 0.4-1.0)       * Chico-Wildcat    (15.0229; Tribes; RM 2.6-5.0)       * Lost             (15.0234; Tribes; RM 0.0-1.9) "}`
 
-`r if(params$sp=="Coho" & params$system=="South Sound"){"
-  * Coho
-    + South Sound
-      * Woodland
-      * Perry
-      * Skookum + Trib
-      * Rocky
-      * Goldsboro
-      * Cranberry
-      * Sherwood
-      * Coulter
-      * Rocky
-"}`
+`r if(params$sp=="Coho" & params$system=="South Sound"){"   * Coho     + South Sound       * Woodland       * Perry       * Skookum + Trib       * Rocky       * Goldsboro       * Cranberry       * Sherwood       * Coulter       * Rocky "}`
 
-`r if(params$sp=="Steelhead"){"
-  * Steelhead
-    + Puyallup River
-"}`
-
-
+`r if(params$sp=="Steelhead"){"   * Steelhead     + Puyallup River "}`
 
 ```{r setup, message = FALSE}
 # rm(list=ls())
@@ -231,29 +185,29 @@ if(params$system=="South Sound"){
 
 # **Area-under-the-curve or redd-based calculations**
 
----
+------------------------------------------------------------------------
 
-* Data inputs:
-  + WDFW spawning ground survey data (i.e., live counts, dead counts, mark-type samples)
-  + Tribal spawning ground survey data
-  + Historic stock-specific ETRS time series
-  + Historic percentage of hatchery-origin-spawners (pHOS) time series
-* Methods:
-  + Pull WDFW spawning ground survey data (i.e., live counts, redd counts, and mark-type samples) from FTS server
-  + Read in tribal survey data
-  + Sum live counts for each system & time step
-    * Check live counts for systems that need a 0-week before or after and add them
-    * Identify survey counts <4 days apart and and combine them
-  + Calculate AUC for each system, adjusted for a stream life of 10 days; filter for systems used as indices
-  + Plot catch curves for index systems
-  + For even-year Chinook returns, calculate redd-based escapement; Chinook AUC in these years is also adjusted for the mean Redd/AUC ratio  
-
+-   Data inputs:
+    -   WDFW spawning ground survey data (i.e., live counts, dead counts, mark-type samples)
+    -   Tribal spawning ground survey data
+    -   Historic stock-specific ETRS time series
+    -   Historic percentage of hatchery-origin-spawners (pHOS) time series
+-   Methods:
+    -   Pull WDFW spawning ground survey data (i.e., live counts, redd counts, and mark-type samples) from FTS server
+    -   Read in tribal survey data
+    -   Sum live counts for each system & time step
+        -   Check live counts for systems that need a 0-week before or after and add them
+        -   Identify survey counts \<4 days apart and and combine them
+    -   Calculate AUC for each system, adjusted for a stream life of 10 days; filter for systems used as indices
+    -   Plot catch curves for index systems
+    -   For even-year Chinook returns, calculate redd-based escapement; Chinook AUC in these years is also adjusted for the mean Redd/AUC ratio
 
 ```{r AUC, include=T, fig.cap = c("**Figure 1.** Live counts recorded on spawning ground surveys over the spawning season."), fig.topcaption = TRUE}
 # ,"**Figure 1b.** Live counts recorded on spwaning ground surveys over the spawning season for systems with data this year but not included in ETRS calculations historically."
 ################################################################################
 ##### Create function for checking odd or even year
-check_odd_even <-function(number){if(number %% 2 == 0){return("Even")}else{return("Odd")}}
+check_odd_even  <-function(number){if(number %% 2 == 0){return("Even")}else{return("Odd")}}
+specify_decimal <-function(x, k) trimws(format(round(x, k), nsmall=k))
 
 ##### Pull WDFW data from SGS or FTS server
 if(curr_yr>2022){
@@ -419,7 +373,7 @@ if(params$sp=="Chinook"){
   ##### Trim months to August-December for Fall Chinook
   start_date <-c(paste(curr_yr,"08","01",sep="-"))
   end_date   <-c(paste(curr_yr+1,"02","01",sep="-"))
-  live_counts_fall <-dplyr::filter(live_counts_fixed, Date > start_date & Date < end_date)
+  live_counts_fall <-dplyr::filter(live_counts, Date > start_date & Date < end_date)
 }
 
 if(params$sp=="Steelhead"){
@@ -495,6 +449,7 @@ if(params$sp=="Coho"){
 ################################################################################
 ##### AUC-based escapement
 ### Count number of sampling days per system
+live_counts_fall$StreamCatalogCode <-specify_decimal(as.numeric(live_counts_fall$StreamCatalogCode),4)
 systems      <-unique(live_counts_fall$StreamCatalogCode)
 system_dates <-matrix(data=NA,nrow=length(systems),ncol=2)
 
@@ -530,19 +485,21 @@ live_sums$Live      <-as.numeric(live_sums$Live)
 # live_sums$System    <-as.numeric(live_sums$System)
 
 live_sums_sort      <-live_sums[order(live_sums$System, live_sums$Date),] # reorder dataset so dates are in order
+live_sums_trim      <-live_sums[order(live_sums$System, live_sums$Date),] # reorder dataset so dates are in order
 
-### Checking 0-count surveys and flatlines
-# Exclude some
-systems <-unique(live_sums_sort$System)
-keep    <-NA
-for(z in 1:length(systems)){
-  dat <-dplyr::filter(live_sums_sort, System==systems[z])
-  if((sum(dat$Live))>0){keep[z] <-systems[z]}
-}
-keep_z <-keep[!is.na(keep)]
+# ### Checking 0-count surveys and flatlines
+# # Exclude some
+# systems <-unique(live_sums_sort$System)
+# keep    <-NA
+# for(z in 1:length(systems)){
+#   dat <-dplyr::filter(live_sums_sort, System==systems[z])
+#   if((sum(dat$Live))>0){keep[z] <-systems[z]}
+# }
+# keep_z <-keep[!is.na(keep)]
+# 
+# ### Add zero-weeks before/after if necessary
+# live_sums_trim <-dplyr::filter(live_sums_sort, System %in% keep_z)
 
-### Add zero-weeks before/after if necessary
-live_sums_trim <-dplyr::filter(live_sums_sort, System %in% keep_z)
 systems_trim   <-unique(live_sums_trim$System)
 zeds_before    <-data.frame()
 zeds_after     <-data.frame()
@@ -746,6 +703,8 @@ levels(system_AUC$system.name) <-included
 
 ### AUC-based Figures & Tables
 # Included
+live_sums_sort3$System <-specify_decimal(as.numeric(live_sums_sort3$System),4)
+
 live_sums_fig                <-dplyr::filter(live_sums_sort3, System %in% systems_esc)
 live_sums_fig$System         <-as.factor(live_sums_fig$System)
 levels(live_sums_fig$System) <-included
@@ -775,13 +734,13 @@ if(params$sp=="Chinook"){
     kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T) %>%
     pack_rows(index = c("Clear Creek"         = nrow(live_sums_fig[which(live_sums_fig$System=="Clear Creek"),]),
                         "Salmon Creek"        = nrow(live_sums_fig[which(live_sums_fig$System=="Salmon Creek"),]),
-                        # "Salmon Trib"         = nrow(live_sums_fig[which(live_sums_fig$System=="Salmon Trib"),]),
+                        "Salmon Trib"         = nrow(live_sums_fig[which(live_sums_fig$System=="Salmon Trib"),]),
                         "Boise Creek"         = nrow(live_sums_fig[which(live_sums_fig$System=="Boise Creek"),]),
                         "Fennel Creek"        = nrow(live_sums_fig[which(live_sums_fig$System=="Fennel Creek"),]),
-                        # "Canyon Falls"        = nrow(live_sums_fig[which(live_sums_fig$System=="Canyon Falls"),]),
+                        "Canyon Falls"        = nrow(live_sums_fig[which(live_sums_fig$System=="Canyon Falls"),]),
                         "South Prairie Creek" = nrow(live_sums_fig[which(live_sums_fig$System=="South Prairie Creek"),]),
-                        "Wilkeson Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Wilkeson Creek"),])#,
-                        # "Kapowsin Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Kapowsin Creek"),])
+                        "Wilkeson Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Wilkeson Creek"),]),
+                        "Kapowsin Creek"      = nrow(live_sums_fig[which(live_sums_fig$System=="Kapowsin Creek"),])
                         ))
 }
 if(params$sp=="Coho" & params$system=="Puyallup River"){
@@ -846,8 +805,8 @@ if(params$sp=="Coho" & params$system=="South Sound"){
 #                       ))
 
 ```
-<br>
-<br>
+
+<br> <br>
 
 ```{r redd}
 ################################################################################
@@ -887,6 +846,7 @@ if(params$sp=="Chinook"){
     }
     colnames(redd_esc) <-c("year","system.id","redd_based_esc","redd_count")
     redd_esc           <-as.data.frame(redd_esc)
+    redd_esc$system.id <-specify_decimal(as.numeric(redd_esc$system.id),4)
     
     ##### Join new (system_AUC calc above) and old (read in csv) calcs
     Redd_AUC_new                <-merge(system_AUC,redd_esc,by="system.id")
@@ -1054,7 +1014,6 @@ if(params$sp=="Steelhead"){
     kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
 }
 ```
-  
 
 ```{r white_esc, eval=eval_white, fig.width=c(6,6), fig.height=c(2,4), fig.cap=c("**Figure 2.** Total fish passed at Mud Mountain Dam.", "**Figure 3.** Total UM, HOR, and AP fish at Mud Mountain Dam."), fig.topcaption = TRUE}
 
@@ -1062,7 +1021,7 @@ if(params$sp=="Chinook"){
   counts      <-read.csv(paste0(drive_white_esc,"counts.csv"))
   counts_new  <-read.csv(paste0(new_data_white,curr_yr,"_White River_",params$sp,"_MMD_Counts.csv"))
   fall_AD_MMD <-read.csv(paste0(new_data_white,curr_yr,"_White River_",params$sp,"_MMD_AdClipped_fall.csv")) # Fall Chinook counts at MMD
-  misc_dat    <-read.csv(paste0(drive_sp,curr_yr,"_Puyallup Basin_",params$sp," Misc Data.csv"))
+  misc_dat    <-read.csv(paste0(drive_sp,curr_yr,"_Puyallup River_",params$sp," Misc Data.csv"))
   NOR_ass     <-read.csv(paste0(drive_white_esc,"WRH_DNA_StockStructure.csv")) # DNA sampling at WRH
 
   if(curr_yr>=2024){
@@ -1103,25 +1062,25 @@ if(params$sp=="Chinook"){
     for(i in 1:length(unsamp_weeks)){
       temp_df <-dplyr::filter(counts_new_week, Week %in% c(unsamp_weeks[i]-1,unsamp_weeks[i],unsamp_weeks[i]+1))
       # wild adults
-      prop_W_A <-sum(temp_df$wild_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      prop_W_A <-sum(temp_df$wild_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped)
       W_A_exp  <-(prop_W_A * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$wild_total
       # wild jacks
       prop_W_J <-sum(temp_df$W_Jack)/sum(temp_df$W_Jack, temp_df$A_Jack, temp_df$H_Jack, temp_df$U_Jack)
       W_J_exp  <-(prop_W_J * dplyr::filter(temp_df, Week==unsamp_weeks[i])$U_Jacks) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$W_Jack
       # acclimation pond adults
-      prop_AP_A <-sum(temp_df$AP_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      prop_AP_A <-sum(temp_df$AP_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped)
       AP_A_exp  <-(prop_AP_A * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$AP_total
       # acclimation pond jacks
       prop_AP_J <-sum(temp_df$A_Jack)/sum(temp_df$W_Jack, temp_df$A_Jack, temp_df$H_Jack, temp_df$U_Jacks)
       AP_J_exp  <-(prop_AP_J * dplyr::filter(temp_df, Week==unsamp_weeks[i])$U_Jacks) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$A_Jack
       # hatchery adults
-      prop_H_A <-sum(temp_df$hatchery_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      prop_H_A <-sum(temp_df$hatchery_total)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped)
       H_A_exp  <-(prop_H_A * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$hatchery_total
       # hatchery jacks
       prop_H_J <-sum(temp_df$H_Jack)/sum(temp_df$W_Jack, temp_df$A_Jack, temp_df$H_Jack, temp_df$U_Jacks)
       H_J_exp  <-(prop_H_J * dplyr::filter(temp_df, Week==unsamp_weeks[i])$U_Jacks) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$H_Jack
       # fall adults
-      prop_AD <-sum(temp_df$Ad.Clipped)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped, temp_df$Unsampled)
+      prop_AD <-sum(temp_df$Ad.Clipped)/sum(temp_df$wild_total, temp_df$AP_total, temp_df$hatchery_total, temp_df$Ad.Clipped)
       AD_exp  <-(prop_AD * dplyr::filter(temp_df, Week==unsamp_weeks[i])$Unsampled) + dplyr::filter(temp_df, Week==unsamp_weeks[i])$Ad.Clipped
       
       Unsamp_A_exp <-sum(W_A_exp, AP_A_exp, H_A_exp, AD_exp) - sum(temp_df[temp_df$Week==unsamp_weeks[i],"wild_total"], temp_df[temp_df$Week==unsamp_weeks[i],"AP_total"],
@@ -1134,6 +1093,14 @@ if(params$sp=="Chinook"){
     unsamp                          <-as.data.frame(cbind(unsamp_weeks,matrix(unlist(exp_all), nrow=length(unsamp_weeks), byrow=TRUE)))
     unsamp[is.na(unsamp)] <-0
     colnames(unsamp) <-c("Week", "W_A_exp", "W_J_exp", "AP_A_exp", "AP_J_exp", "H_A_exp", "H_J_exp", "AD_exp", "Unsamp_A_exp", "Unsamp_J_exp")
+    
+        # Fall fish
+    fall_AD_MMD[,4]            <-month(as.POSIXlt(fall_AD_MMD$Date, format="%m/%d/%Y"))
+    colnames(fall_AD_MMD)[4]   <-"Month"
+    fall_AD_MMD_sums           <-aggregate(x=list(fall_AD_MMD$Ad.Clip.Adults,fall_AD_MMD$Ad.Clip.Jacks),
+                                           by=list(fall_AD_MMD$Month), FUN=sum)
+    colnames(fall_AD_MMD_sums) <-c("Month","Count_Adults","Count_Jacks")
+
   }
 
   if(curr_yr<2024){
@@ -1318,7 +1285,7 @@ if(params$sp=="Chinook"){
     NOR_ass[nrow(NOR_ass),"spring_NOR_live"] <-dplyr::filter(misc_dat, Type == "spring_NOR_live")$Value
     NOR_ass[nrow(NOR_ass),"spring_NOR_mort"] <-dplyr::filter(misc_dat, Type == "spring_NOR_mort")$Value
     NOR_ass[nrow(NOR_ass),"spring_HOR_CWT"]  <-dplyr::filter(misc_dat, Type == "spring_HOR_CWT")$Value
-    NOR_ass[nrow(NOR_ass),"fall"]            <-dplyr::filter(misc_dat, Type == "fall")$Value
+    NOR_ass[nrow(NOR_ass),"fall"]            <-dplyr::filter(misc_dat, Type == "fall_NOB")$Value
     NOR_ass[nrow(NOR_ass),"unknown"]         <-dplyr::filter(misc_dat, Type == "unknown")$Value
     NOR_ass[nrow(NOR_ass),"no_sample"]       <-dplyr::filter(misc_dat, Type == "no sample")$Value
   }
@@ -1430,11 +1397,13 @@ if(params$sp=="Chinook"){
     if(yrs[y]>=2024){
       counts[which(counts$return_yr==as.numeric(yrs[y])),"fall_passed"] <-(dplyr::filter(counts,return_yr==yrs[y])$fall_unk_total -
                                                                            dplyr::filter(counts,return_yr==yrs[y])$fall_held) +
-                                                                           c(sum(counts_new$Ad.Clipped), 0)
+                                                                           c(sum(counts_new$Ad.Clipped), 0) + 
+                                                                           dplyr::filter(misc_dat, Type == "fall_total")$Value
     }
   }
   counts$total_passed <-rowSums(counts[c("NOR_passed","HOR_passed","AP_passed")])
-  white_esc           <-dplyr::filter(counts,return_yr==curr_yr & Stage=="Adults")$fall_passed
+  # white_esc           <-dplyr::filter(counts,return_yr==curr_yr & Stage=="Adults")$fall_passed
+  white_esc           <- dplyr::filter(misc_dat, Type == "fall_total")$Value + sum(unsamp$AD_exp)
   
   # Write files for next escapement year
   if(curr_yr<2024){write.csv(unsamp_extr_final,paste0(drive_white_esc,curr_yr,"_Outputs","/",curr_yr,"_unsamp_expan.csv"),row.names=FALSE)}
@@ -1489,18 +1458,17 @@ if(params$sp=="Chinook"){
 }
 
 ```
-<br>
-<br>
+
+<br> <br>
 
 # **Mark-rate estimates**
 
----
+------------------------------------------------------------------------
 
-* Mark-type data are collected from carcass sampling, whereby the presence (UM) or absence (AD) of an adipose fin denotes natural- or hatchery-origin, respectively. 
-* In addition, carcasses are scanned for a coded wire tag to confirm hatchery-origin (beep or no beep; B or NB). 
-* Mark-rate is then calculated for each river system as the proportion of ad-clipped and/or tagged individuals (i.e., UMB, ADB, ADNB, UnkB) to unmarked individuals with no tag (i.e., UMNB).
-* When the number of carcasses sampled in a river system is too low (n < 10; exact threshold needs to be determined), the basin-wide mark-rate must be used for that system.
-
+-   Mark-type data are collected from carcass sampling, whereby the presence (UM) or absence (AD) of an adipose fin denotes natural- or hatchery-origin, respectively.
+-   In addition, carcasses are scanned for a coded wire tag to confirm hatchery-origin (beep or no beep; B or NB).
+-   Mark-rate is then calculated for each river system as the proportion of ad-clipped and/or tagged individuals (i.e., UMB, ADB, ADNB, UnkB) to unmarked individuals with no tag (i.e., UMNB).
+-   When the number of carcasses sampled in a river system is too low (n \< 10; exact threshold needs to be determined), the basin-wide mark-rate must be used for that system.
 
 ```{r mark_rate, fig.cap=c("**Figure 2.** Percentage of hatchery-origin-spawners (pHOS) over time for tributaries within the system.","**Figure 3.** ETRS calculated for each tributary in the system."), fig.topcaption = TRUE, warning=FALSE}
 
@@ -1552,7 +1520,7 @@ if(params$sp=="Chinook"){
                 "CWT.ADIPOSE.PRESENT_Female",
                 "CWT.NO.ADIPOSE_Male",
                 "CWT.NO.ADIPOSE_Female",
-                "CWT..NO.TAIL_Male",
+                "CWT.NO.TAIL_Male",
                 "CWT.NO.TAIL_Female",
                 "NO.ADIPOSE.NO.CWT_Male",
                 "NO.ADIPOSE.NO.CWT_Female",
@@ -1636,9 +1604,16 @@ if(params$sp=="Chinook"){
                                       dplyr::filter(mark_stat, System %in%  c("South Prairie Creek"))$Calc_Sampled,
                                       dplyr::filter(mark_stat, System %in%  c("South Prairie Creek"))$Marked)
   # White River calc'd separately
-  mark_stat[(nrow(mark_stat)+1),] <-c("White River",
+  if(curr_yr < 2024){mark_stat[(nrow(mark_stat)+1),] <-c("White River",
                                       white_esc,
                                       (dplyr::filter(unsamp, Group == "Adults")$Total_Fall_Extr + sum(fall_AD_MMD_sums$Count_Adults)))
+  }
+  if(curr_yr >= 2024){mark_stat[(nrow(mark_stat)+1),] <-c("White River",
+                                      white_esc,
+                                      sum(unsamp$AD_exp))
+
+  }
+
   
   mark_stat$Calc_Sampled <-as.numeric(mark_stat$Calc_Sampled)
   mark_stat$Marked       <-as.numeric(mark_stat$Marked)
@@ -1871,19 +1846,18 @@ pHOS_ts[,!names(pHOS_ts) %in% c("Salmon Trib")] %>%
   kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
 
 ```
-<br>
-<br>
+
+<br> <br>
 
 # **Extreme terminal run size**
 
----
+------------------------------------------------------------------------
 
-* Current-year/Base-year AUC proportion is applied to base-year ETRS to estimate current-year ETRS.
-* Mark-rates based on carcass sampling throughout the basin are used to separate total ETRS into stock-specific (NOR and HOR) ETRS.
-  + The mark-rates applied can be system-specific or basin-wide depending on the mark-type sample size.
-* For East Kitsap and South Sound coho, the stock-specific ETRS is also split into sub-basin returns based on previously-determined spawning habitat percentages.
-* The stock-specific and total basin ETRS estimates are reported below for the current return year. 
-
+-   Current-year/Base-year AUC proportion is applied to base-year ETRS to estimate current-year ETRS.
+-   Mark-rates based on carcass sampling throughout the basin are used to separate total ETRS into stock-specific (NOR and HOR) ETRS.
+    -   The mark-rates applied can be system-specific or basin-wide depending on the mark-type sample size.
+-   For East Kitsap and South Sound coho, the stock-specific ETRS is also split into sub-basin returns based on previously-determined spawning habitat percentages.
+-   The stock-specific and total basin ETRS estimates are reported below for the current return year.
 
 ```{r esc_results, fig.cap=c("**Figure 3.** ETRS calculated for each tributary in the system."), fig.topcaption = TRUE, warning=FALSE}
 ##### [Escapement] Use pHOS to convert total escapement to stock-specific
@@ -2138,7 +2112,8 @@ if(params$system=="South Sound"){write.csv(esc_ts_stock_new, paste0(drive_SS,cur
 if(params$sp=="Chinook"){write.csv(esc_ts_stock_new, paste0(drive_white,curr_yr+1,"_Forecast/esc_ts_stock.csv"),row.names = FALSE)}
 
 ```
-<br>
-<br>
 
-<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
+<br> <br>
+
+::: {.tocify-extend-page data-unique="tocify-extend-page" style="height: 0;"}
+:::
