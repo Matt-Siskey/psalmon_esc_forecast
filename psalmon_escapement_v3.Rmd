@@ -61,7 +61,7 @@ knitr::opts_chunk$set(message = FALSE)
 
 curr_yr    <-as.numeric(params$current_year) # year of new data
 fore_yr    <-as.numeric(params$current_year)+1 # year forecasting for
-data_pull  <-TRUE
+data_pull  <-FALSE
 
 ### Load libraries
 library(ggplot2);library(readxl);library(ggh4x);library(dplyr);library(MuMIn);library(kableExtra);library(ggthemes);library(tidyr);
@@ -550,6 +550,7 @@ survey_gaps[,2]       <-as.numeric(survey_gaps[,2])
 ### Combine survey counts that are <4 days apart
 survey_gaps_flag <-survey_gaps[which(survey_gaps[,2]<4),]
 fix_survey       <-unique(survey_gaps_flag[,"System"])
+fixes <-list()
 
 for(d in 1:length(fix_survey)){
   dat <-live_sums_sort2[which(live_sums_sort2$System==fix_survey[d]),]
@@ -562,9 +563,10 @@ for(d in 1:length(fix_survey)){
         i=1}  
     }
   }
-  live_sums_fixed <-live_sums_sort2[which(live_sums_sort2$System!=fix_survey[d]),]
-  live_sums_fixed <-rbind(live_sums_fixed,dat)
+  # fixes_temp <-live_sums_sort2[which(live_sums_sort2$System!=fix_survey[d]),]
+  fixes[[d]] <-dat
 }
+live_sums_fixed <-rbind(map_df(fixes, ~as.data.frame(.)), dplyr::filter(live_sums_sort2, !(System %in% fix_survey)))
 live_sums_sort3 <-live_sums_fixed[order(live_sums_fixed$System, live_sums_fixed$Date),] # reorder dataset so dates are in order
 
 ### Calculate AUC for each system
@@ -588,7 +590,7 @@ for(s in 1:length(systems)){
 live_sums_sort3[,4]          <-live_AUC
 colnames(live_sums_sort3)[4] <-"AUC"
 system_AUC                   <-aggregate(live_sums_sort3$AUC, list(live_sums_sort3$System), FUN=sum) 
-colnames(system_AUC)         <-c("system.id","AUC")
+colnames(system_AUC)         <-c("system.id","AUC_sum")
 
 # Systems included in escapement calcs
 if(params$sp=="Chinook"){systems_esc <-c("10.0022","10.0035","10.0036","10.0057","10.0406","10.0410","10.0429","10.0432","10.0600")}
@@ -614,27 +616,7 @@ system_AUC     <-dplyr::filter(system_AUC, system.id %in% systems_esc)
 #                 "Spiketon Creek"    = "10.0453",
 #                 "Fiske Creek"       = "10.0596")
 ### Included (system_AUC)
-if(params$sp=="Steelhead"){
-  included <-list("Puyallup River"      = "10.0021",
-                  "Clear Creek"         = "10.0022", 
-                  "White River"         = "10.0031",
-                  "Salmon Creek"        = "10.0035",
-                  "Salmon Trib"         = "10.0036", 
-                  "Boise Creek"         = "10.0057",
-                  "Rushingwater"        = "10.0265",
-                  "Fennel Creek"        = "10.0406",
-                  "Canyon Falls"        = "10.0410",
-                  "Carbon River"        = "10.0413",
-                  "Voights Creek"       = "10.0414",
-                  "South Prairie Creek" = "10.0429",
-                  "Wilkeson Creek"      = "10.0432",
-                  "Kapowsin Creek"      = "10.0600",
-                  "Fox Creek"           = "10.0608",
-                  "Ledout Creek"        = "10.0620",
-                  "Kellog Creek"        = "10.0621",
-                  "Niesson Creek"       = "10.0622",
-                  "Mowich River"        = "10.0624")
-}
+# Chinook
 if(params$sp=="Chinook"){
   included <-list("Clear Creek"         = "10.0022", 
                   "Salmon Creek"        = "10.0035",
@@ -645,7 +627,10 @@ if(params$sp=="Chinook"){
                   "South Prairie Creek" = "10.0429",
                   "Wilkeson Creek"      = "10.0432",
                   "Kapowsin Creek"      = "10.0600")
+  
 }
+
+# Coho
 if(params$sp=="Coho"){
   if(params$system=="Puyallup River"){
     included <-list("Fennel Creek"    = "10.0406",
@@ -688,6 +673,29 @@ if(params$sp=="Coho"){
                       "Coulter Creek"           =	"15.0002",
                       "Rocky Creek"             = "15.0015") # Section 1
   }
+}
+
+# Steelhead
+if(params$sp=="Steelhead"){
+  included <-list("Puyallup River"      = "10.0021",
+                  "Clear Creek"         = "10.0022", 
+                  "White River"         = "10.0031",
+                  "Salmon Creek"        = "10.0035",
+                  "Salmon Trib"         = "10.0036", 
+                  "Boise Creek"         = "10.0057",
+                  "Rushingwater"        = "10.0265",
+                  "Fennel Creek"        = "10.0406",
+                  "Canyon Falls"        = "10.0410",
+                  "Carbon River"        = "10.0413",
+                  "Voights Creek"       = "10.0414",
+                  "South Prairie Creek" = "10.0429",
+                  "Wilkeson Creek"      = "10.0432",
+                  "Kapowsin Creek"      = "10.0600",
+                  "Fox Creek"           = "10.0608",
+                  "Ledout Creek"        = "10.0620",
+                  "Kellog Creek"        = "10.0621",
+                  "Niesson Creek"       = "10.0622",
+                  "Mowich River"        = "10.0624")
 }
 
 ### Add column with system names
@@ -831,7 +839,8 @@ if(params$sp=="Chinook"){
     # Redds                 <-rbind(Redds_wdfw,Redds_tribe)
     # systems               <-unique(Redds$System_id)
     
-    Redds           <-live_counts[,c("Date","StreamCatalogCode","Redds")]
+    live_counts_fall$StreamCatalogCode <-specify_decimal(as.numeric(live_counts_fall$StreamCatalogCode),4)
+    Redds           <-live_counts_fall[,c("Date","StreamCatalogCode","Redds")]
     colnames(Redds) <-c("Date","System_id","Redds")
     Redds$Redds     <-replace(Redds$Redds, is.na(Redds$Redds), 0)  
     Redds$Redds     <-as.numeric(Redds$Redds)
@@ -850,13 +859,13 @@ if(params$sp=="Chinook"){
     
     ##### Join new (system_AUC calc above) and old (read in csv) calcs
     Redd_AUC_new                <-merge(system_AUC,redd_esc,by="system.id")
-    col_order                   <-c("year", "system.id", "system.name","redd_based_esc","AUC")
+    col_order                   <-c("year", "system.id", "system.name","redd_based_esc","AUC_sum")
     Redd_AUC_new                <-Redd_AUC_new[, col_order]
-    Redd_AUC_new$AUC_adj        <-Redd_AUC_new$AUC/fish_days
-    Redd_AUC_new$Redd_AUC_ratio <-as.numeric(Redd_AUC_new$redd_based_esc)/Redd_AUC_new$AUC_adj
-    Redd_AUC_curryr             <-Redd_AUC_new[,c("year","system.id","system.name","redd_based_esc","AUC","AUC_adj")]
-    colnames(Redd_AUC_curryr)[5] <-"AUC_fishdays"
-    Redd_AUC                    <-rbind(Redd_AUC,Redd_AUC_curryr)
+    Redd_AUC_new$AUC_fishdays   <-Redd_AUC_new$AUC/fish_days
+    Redd_AUC_new$Redd_AUC_ratio <-as.numeric(Redd_AUC_new$redd_based_esc)/Redd_AUC_new$AUC_fishdays
+    Redd_AUC_curryr             <-Redd_AUC_new[,c("year","system.id","system.name","redd_based_esc","AUC_sum","AUC_fishdays")]
+    Redd_AUC_curryr$AUC_adj     <-rep(NA,nrow(Redd_AUC_curryr))
+    Redd_AUC                    <-rbind(Redd_AUC,Redd_AUC_curryr[,c("year","system.id","system.name","redd_based_esc","AUC_fishdays","AUC_adj")])
     Redd_AUC$year               <-as.numeric(Redd_AUC$year)
     Redd_AUC$redd_based_esc     <-as.numeric(Redd_AUC$redd_based_esc)
     
@@ -864,10 +873,10 @@ if(params$sp=="Chinook"){
     odd_yrs  <- Redd_AUC[lapply(Redd_AUC$year, "%%", 2) != 0,]
     
     ##### AUC adj for stream life & mean redd/AUC ratio
-    even_yrs$Redd_AUC_ratio <-even_yrs[,"redd_based_esc"]/even_yrs[,"AUC_adj"]
+    even_yrs$Redd_AUC_ratio <-even_yrs[,"redd_based_esc"]/even_yrs[,"AUC_fishdays"]
     # SPC and Wilkeson get Redd_AUC_ratio adjustment based on mean Redd_AUC_ratio over time
     even_yrs_SPC           <-even_yrs[which(even_yrs$system.name=="South Prairie Creek"),]
-    SPC_ReddAUC_ratio_mean <-mean(even_yrs_SPC$Redd_AUC_ratio)
+    SPC_ReddAUC_ratio_mean <-mean(filter(even_yrs_SPC, year >= 2000)$Redd_AUC_ratio)
     spc_wilk_AUC           <-dplyr::filter(system_AUC,system.name=="South Prairie Creek")$AUC +
                              dplyr::filter(system_AUC,system.name=="Wilkeson Creek")$AUC
     spc_wilk_AUC_adj       <-(spc_wilk_AUC/fish_days)*SPC_ReddAUC_ratio_mean
@@ -875,7 +884,7 @@ if(params$sp=="Chinook"){
     new_AUC <-dplyr::filter(even_yrs,year==curr_yr)
     write.csv(Redd_AUC, paste0(drive_puy_esc_next,"/Puyallup River_Redd_AUC.csv"),row.names=FALSE)
     
-    system_AUC <-new_AUC[,c("system.id","AUC_adj","system.name")]
+    system_AUC <-new_AUC[,c("system.id","AUC_fishdays","system.name")]
   }
   
   if(check_odd_even(curr_yr)=="Odd"){
@@ -933,31 +942,39 @@ if(params$sp=="Chinook"){
   carbon_esc <- carbon_1999*spc_ratio
   
   # Puyallup River expansion
-  puy_tribs_AUC   <-system_AUC %>% filter(system.name %in% c("Canyon Falls","Fennel Creek","Kapowsin Creek"))
+  # if(check_odd_even(curr_yr)=="Even"){
+  #   puy_tribs_redd   <-new_AUC %>% filter(system.name %in% c("Canyon Falls","Fennel Creek","Kapowsin Creek"))
+  #   puy_tribs_y     <-(sum(puy_tribs_redd$redd_based_esc))
+  # }
+  # if(check_odd_even(curr_yr)=="Odd"){
+    puy_tribs_AUC   <-system_AUC %>% filter(system.name %in% c("Canyon Falls","Fennel Creek","Kapowsin Creek"))
+    puy_tribs_y     <-(sum(puy_tribs_AUC$AUC_fishdays))*SPC_ReddAUC_ratio_mean
+  # }
   
-  puy_tribs_y     <-(sum(puy_tribs_AUC$AUC_fishdays))*SPC_ReddAUC_ratio_mean
   puy_tribs_ratio <-puy_tribs_y/puy_tribs_1999
   puyallup_esc    <-puyallup_1999*puy_tribs_ratio
   
   # Table of AUC (odd yrs) or AUC & redd_based_esc (even yrs) data
   if(check_odd_even(curr_yr)=="Even"){
-    Redd_AUC_new %>%
-      # dplyr::filter(.,year==max(year)) %>%
-      kbl(row.names = FALSE, 
-          caption = "Table 3. The sum of area-under-the-curve (AUC) adjusted for fish days and Redd/AUC ratio.", 
-          digits = 1) %>%
-      kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+    table_3 <-Redd_AUC_new %>%
+                # dplyr::filter(.,year==max(year)) %>%
+                kbl(row.names = FALSE, 
+                    caption = "Table 3. The sum of area-under-the-curve (AUC) adjusted for fish days and Redd/AUC ratio.", 
+                    digits = 1) %>%
+                kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
   }
   
   if(check_odd_even(curr_yr)=="Odd"){
-    new_AUC[,c("year", "system.id", "system.name","AUC_adj")] %>%
-      # dplyr::filter(.,year==max(year)) %>%
-      kbl(row.names = FALSE, 
-          caption = "Table 3. The sum of area-under-the-curve (AUC) adjusted for fish days and Redd/AUC ratio.", 
-          digits = 1) %>%
-      kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+    table_3 <-new_AUC[,c("year", "system.id", "system.name","AUC_adj")] %>%
+                # dplyr::filter(.,year==max(year)) %>%
+                kbl(row.names = FALSE, 
+                    caption = "Table 3. The sum of area-under-the-curve (AUC) adjusted for fish days and Redd/AUC ratio.", 
+                    digits = 1) %>%
+                kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
   }
 }
+
+table_3
 
 if(params$sp=="Coho"){
   new_AUC           <-aggregate(list(live_sums_fig['Live'],live_sums_fig['AUC']), by=live_sums_fig['System'], sum)
@@ -1015,7 +1032,7 @@ if(params$sp=="Steelhead"){
 }
 ```
 
-```{r white_esc, eval=eval_white, fig.width=c(6,6), fig.height=c(2,4), fig.cap=c("**Figure 2.** Total fish passed at Mud Mountain Dam.", "**Figure 3.** Total UM, HOR, and AP fish at Mud Mountain Dam."), fig.topcaption = TRUE}
+```{r white_esc, eval=eval_white, fig.width=c(6,6), fig.height=c(2,4), fig.cap=c("**Figure 2.** Total fish passed at Mud Mountain Dam.", "**Figure 3.** Total UM, HOR, and AP fish at Mud Mountain Dam."), fig.topcaption = TRUE, include=TRUE, echo=TRUE, results='asis'}
 
 if(params$sp=="Chinook"){
   counts      <-read.csv(paste0(drive_white_esc,"counts.csv"))
@@ -1414,47 +1431,51 @@ if(params$sp=="Chinook"){
   write.csv(NOR_ass[,1:7],paste0(drive_white_esc_next,"/WRH_DNA_StockStructure.csv"),row.names=FALSE)
   write.csv(NOR_ass[,1:6],paste0(drive_white_fore_next,"/WRH_DNA_StockStructure.csv"),row.names=FALSE)
   
-  ggplot() + 
+  
+  ### Figures
+  print(ggplot() + 
     geom_line(data = counts, aes(x = return_yr, y = total_passed, group = Stage, color=Stage), linewidth = 1) +
     xlab('Return Year') +
     ylab('Total Fish Passed') +
     theme_classic() +
     scale_colour_economist()+
-    theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+    theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1)))
   
-  NOR_ass[,c("return_yr","prop_spring_NOR","prop_spring_HOR","prop_fall","prop_unk","prop_spring_total","prop_fall_unk")] %>%
-    kbl(caption="Table 3. Stock composition based on adipose fin mark status (?) and coded wire tag interceptions at Mud Mountain Dam on the White River.", 
-        digits = 3) %>%
-    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+  mmd_counts_long <-tidyr::gather(counts[,c("return_yr","Stage","UM_Total","HOR_Total","AP_Total")], 
+                                  Stock, Escapement, "UM_Total","HOR_Total","AP_Total")
   
-  
-  mmd_counts_long <-tidyr::gather(counts[,c("return_yr","Stage","UM_Total","HOR_Total","AP_Total")], Stock, Escapement, "UM_Total","HOR_Total","AP_Total")
-  
-  ggplot() + 
+  print(ggplot() + 
     geom_line(data = mmd_counts_long, aes(x = return_yr, y = Escapement, group = Stock, color=Stock), linewidth = 1) +
     xlab('Return Year') +
     # ylab('Total UM Fish') +
     facet_wrap(.~Stage,ncol=1,scales="free")+
     theme_classic() +
     scale_colour_economist()+
-    theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1))
+    theme(axis.text.x = element_text(angle = 40, hjust=1, vjust=1)))
   
+  
+  ### Tables
+  print(NOR_ass[,c("return_yr","prop_spring_NOR","prop_spring_HOR","prop_fall","prop_unk","prop_spring_total","prop_fall_unk")] %>%
+                kbl(caption="Table 3. Stock composition based on adipose fin mark status and coded wire tag interceptions at Mud Mountain Dam on the White River.", digits = 3) %>%
+                kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T))
+  
+
   UM_counts   <-counts[,c("return_yr","Stage","UM","UM_Extr","UM_WRH","UM_Total","UM_to_WRH","NOR_spring_total","NOR_held","NOR_passed")]
   HOR_counts  <-counts[,c("return_yr","Stage","HOR","HOR_Extr","HOR_WRH","HOR_Total","HORs_POP","HOR_spring_total","HOR_held","HOR_passed")]
   AP_counts   <-counts[,c("return_yr","Stage","AP","AP_Extr","AP_WRH","AP_Total","AP_held","AP_spring_total","AP_passed")]
   fall_counts <-counts[,c("return_yr","Stage","fall_unk_total","fall_held","fall_passed")]
   
-  UM_counts[(nrow(UM_counts)-9):nrow(UM_counts),] %>%
+  print(UM_counts[(nrow(UM_counts)-9):nrow(UM_counts),] %>%
     kbl(caption="Table 4. Unmarked fish counts (i.e., adipose fin present).", digits = 1, row.names = FALSE) %>%
-    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T))
   
-  HOR_counts[(nrow(HOR_counts)-9):nrow(HOR_counts),] %>%
+  print(HOR_counts[(nrow(HOR_counts)-9):nrow(HOR_counts),] %>%
     kbl(caption="Table 5. Hatchery-origin fish counts (i.e., adipose fin clipped).", digits = 1, row.names = FALSE) %>%
-    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T))
   
-  AP_counts[(nrow(AP_counts)-9):nrow(AP_counts),] %>%
+  print(AP_counts[(nrow(AP_counts)-9):nrow(AP_counts),] %>%
     kbl(caption="Table 6. Acclimation pond fish counts.", digits = 1, row.names = FALSE) %>%
-    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T)
+    kable_classic(full_width = F, position = "left", html_font = "Cambria", fixed_thead = T))
 }
 
 ```
@@ -1499,11 +1520,18 @@ if(params$sp=="Chinook"){
                                 "Wilkeson Creek","Kapowsin Creek", "Carbon River", "Puyallup River", "White River")
   
   # Add AUC calcs adjusted for fish days
-  new_esc      <-row_to_names(as.data.frame(t(new_AUC[,c("system.name","AUC_adj")])),row_number = 1)
   # new_esc_keep <-dplyr::mutate(.data=new_esc, "Salmon Creek" = as.numeric(new_esc$"Salmon Creek") + as.numeric(new_esc$"Salmon Trib"))
-  new_esc_keep <-new_esc[,system.names.auc]
   # esc_ts[nrow(esc_ts),c("Year",colnames(new_esc_keep),"Stock")] <-c(curr_yr,(as.numeric(new_esc_keep["AUC_adj",])/fish_days),"Total")
-  esc_ts_total[nrow(esc_ts_total),c("Year",colnames(new_esc_keep),"Stock")] <-c(curr_yr,(as.numeric(new_esc_keep["AUC_adj",])),"Total")
+  if(check_odd_even(curr_yr)=="Even"){
+    new_esc      <-row_to_names(as.data.frame(t(Redd_AUC_new[,c("system.name","redd_based_esc")])),row_number = 1)
+    new_esc_keep <-new_esc[,system.names.auc]
+    esc_ts_total[nrow(esc_ts_total),c("Year",colnames(new_esc_keep),"Stock")] <-c(curr_yr,(as.numeric(new_esc_keep["redd_based_esc",])),"Total")
+  }
+  if(check_odd_even(curr_yr)=="Odd"){
+    new_esc      <-row_to_names(as.data.frame(t(new_AUC[,c("system.name","AUC_adj")])),row_number = 1)
+    new_esc_keep <-new_esc[,system.names.auc]
+    esc_ts_total[nrow(esc_ts_total),c("Year",colnames(new_esc_keep),"Stock")] <-c(curr_yr,(as.numeric(new_esc_keep["AUC_adj",])),"Total")
+  }
   
   # Add Carbon, Puyallup, and White esc  
   esc_ts_total[nrow(esc_ts_total),"Carbon River"]   <-carbon_esc                     
@@ -1533,6 +1561,7 @@ if(params$sp=="Chinook"){
   
   # Tribal survey data are used (WDFW only had 2 AD & 1 UM, rest UNK)
   survey_counts_tribe[is.na(survey_counts_tribe)] <-0
+  survey_counts_tribe$WRIA                        <-specify_decimal(as.numeric(survey_counts_tribe$WRIA),4)
   total_sampled_df                                <-survey_counts_tribe[,c(mark_filt,unmark_filt)]
   all_status                                      <-c(mark_filt[-c(1,2,3)],unmark_filt)
   
@@ -1547,10 +1576,10 @@ if(params$sp=="Chinook"){
         group_by(WRIA) %>%
         summarise_at(vars(mark_types),list(sum))
   
-  tribe_marks <-data.frame(WRIA        = x$WRIA,
-                          carc_sampled = x$CARCASSES.SAMPLED,
-                          marked_fish  = rowSums(x[,mark_types[-1]]),
-                          calc_sampled = rowSums(samp_sum[,-1]))
+  tribe_marks <-data.frame(WRIA         = x$WRIA,
+                           carc_sampled = x$CARCASSES.SAMPLED,
+                           marked_fish  = rowSums(x[,mark_types[-1]]),
+                           calc_sampled = rowSums(samp_sum[,-1]))
   tribe_marks$system.name         <-as.factor(tribe_marks$WRIA)
   levels(tribe_marks$system.name) <-included
   tribe_marks_keep                <-dplyr::filter(tribe_marks, system.name %in% names(included))
@@ -1568,7 +1597,7 @@ if(params$sp=="Chinook"){
     spc_AD <-sum(spc_mark_status[,mark_filt])
   }
   if(curr_yr >= 2023){
-    spc_mark_status        <-dplyr::filter(dead_fish_wria, stream_catalog_code == "10.0429")
+    spc_mark_status        <-dplyr::filter(dead_fish_wria, stream_catalog_code == "10.0429" & run_year == curr_yr)
     spc_mark_status_adults <-dplyr::filter(spc_mark_status, maturity == "Adult")
     spc_AD                 <-dplyr::filter(spc_mark_status_adults, fin_clip == "AD")
     spc_UM                 <-dplyr::filter(spc_mark_status_adults, fin_clip == "UM")
@@ -1621,11 +1650,11 @@ if(params$sp=="Chinook"){
   mark_stat              <-dplyr::filter(mark_stat, System != "Salmon Trib")
   
   if(any(mark_stat$M_rate=="NaN")){
-    nans      <-dplyr::filter(mark_stat, M_rate == "NaN")$System
+    nans      <-dplyr::filter(mark_stat, Calc_Sampled < 10)$System
     for(n in 1:length(nans)){
-      recent_Mrate                                       <-pHOS_ts[c((nrow(pHOS_ts)-4):(nrow(pHOS_ts))),nans[n]]
-      avg_Mrate                                          <-mean(recent_Mrate, na.rm=TRUE)
-      mark_stat[which(mark_stat$M_rate=="NaN"),"M_rate"] <-avg_Mrate
+      recent_Mrate                                         <-pHOS_ts[c((nrow(pHOS_ts)-4):(nrow(pHOS_ts))),nans[n]]
+      avg_Mrate                                            <-mean(recent_Mrate, na.rm=TRUE)
+      mark_stat[which(mark_stat$System==nans[n]),"M_rate"] <-avg_Mrate
     }
   }
 }
@@ -2115,5 +2144,4 @@ if(params$sp=="Chinook"){write.csv(esc_ts_stock_new, paste0(drive_white,curr_yr+
 
 <br> <br>
 
-::: {.tocify-extend-page data-unique="tocify-extend-page" style="height: 0;"}
-:::
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
